@@ -6,33 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
 import convertToHLS from '../utils/convertToHLS.js';
-import ffmpeg from 'fluent-ffmpeg';
-import ffprobe from '@ffprobe-installer/ffprobe';
-ffmpeg.setFfprobePath(ffprobe.path);
 
-async function hasAudioTrack(videoUrl) {
-  return new Promise((resolve, reject) => {
-    ffmpeg(videoUrl)
-      // --- FIX for SIGSEGV ---
-      // Add input options to limit how much data ffprobe analyzes. This prevents
-      // it from consuming too much memory and crashing in constrained environments.
-      .inputOptions([
-        '-v error',            // Only show errors, suppress verbose info.
-        '-probesize 500K',     // Limit analysis to the first 500KB of the file.
-        '-analyzeduration 1M'  // Limit analysis to the first second of video data.
-      ])
-      .ffprobe((err, data) => {
-        if (err) {
-          console.error('[hasAudioTrack] Error probing file URL:', err.message);
-          // Reject with a clear error message.
-          return reject(new Error(`ffprobe failed: ${err.message}`));
-        }
-        const hasAudio = data.streams.some(stream => stream.codec_type === 'audio');
-        console.log(`[hasAudioTrack] Audio track present in remote file: ${hasAudio}`);
-        resolve(hasAudio);
-      });
-  });
-}
 const location = 'asia-south1'; // Set your region
 const outputBucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
 const transcoderClient = new TranscoderServiceClient();
@@ -205,16 +179,12 @@ export const transcodeMp4ToHls = async (req, res) => {
   }
 
   try {
-    // --- FIX: GENERATE SIGNED URL FOR FFPROBE ---
-    // ffprobe cannot read 'gs://' directly. We create a temporary, secure HTTPS URL for it.
-    // 10 minutes (600 seconds) is ample time for ffprobe to analyze the file header.
-    console.log(`[transcodeMp4ToHls] Generating signed URL for ffprobe...`);
-    const signedUrlForProbe = await getSignedUrlForGcs(gcsFilePath, 600);
+    // --- FIX: REMOVED FFPROBE AUDIO CHECK ENTIRELY ---
+    // We will now directly submit the job to the Transcoder API.
+    // The API is robust: if the source file has no audio, it will simply
+    // ignore the audioStream configuration and transcode the video part only.
+    console.log('[transcodeMp4ToHls] Bypassing local audio check. Submitting job directly to Transcoder API.');
 
-    // Pass the generated HTTPS URL to the audio check function.
-    const hasAudio = await hasAudioTrack(signedUrlForProbe);
-
-    // Proceed with transcoding job configuration
     const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
     const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
     const projectId = await transcoderClient.getProjectId();
@@ -223,28 +193,23 @@ export const transcodeMp4ToHls = async (req, res) => {
     console.log(`[transcodeMp4ToHls] Output will be at: ${outputBaseUri}`);
     console.log(`[transcodeMp4ToHls] Using Project ID: ${projectId}`);
 
-    // Dynamically build the configuration based on audio presence
-    const elementaryStreams = [
-      { key: 'video-sd', videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 }}},
-      { key: 'video-hd', videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 }}},
-    ];
+    // Define a complete job configuration that includes audio.
+    // The Transcoder API will use this as a template.
+    const jobConfig = {
+      elementaryStreams: [
+        { key: 'video-sd', videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 }}},
+        { key: 'video-hd', videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 }}},
+        // Always include the audio stream definition.
+        { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2, channelLayout: ['stereo'] }},
+      ],
+      muxStreams: [
+        // Map both video and audio to the output streams.
+        { key: 'sd', container: 'ts', elementaryStreams: ['video-sd', 'audio-stereo'] },
+        { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] },
+      ],
+      manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] }],
+    };
 
-    const muxStreams = [
-      { key: 'sd', container: 'ts', elementaryStreams: ['video-sd'] },
-      { key: 'hd', container: 'ts', elementaryStreams: ['video-hd'] },
-    ];
-
-    if (hasAudio) {
-      console.log('[transcodeMp4ToHls] Adding audio stream to the job configuration.');
-      elementaryStreams.push({
-        key: 'audio-stereo',
-        audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2, channelLayout: ['stereo'] },
-      });
-      muxStreams[0].elementaryStreams.push('audio-stereo');
-      muxStreams[1].elementaryStreams.push('audio-stereo');
-    }
-
-    const jobConfig = { elementaryStreams, muxStreams, manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] }]};
     const request = { parent: `projects/${projectId}/locations/${location}`, job: { inputUri: gcsFilePath, outputUri: outputBaseUri, config: jobConfig }};
 
     console.log('[transcodeMp4ToHls] Sending job request to Transcoder API.');
