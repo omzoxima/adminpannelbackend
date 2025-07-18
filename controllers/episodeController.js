@@ -199,8 +199,10 @@ export const transcodeMp4ToHls = async (req, res) => {
       elementaryStreams: [
         { key: 'video-sd', videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 }}},
         { key: 'video-hd', videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 }}},
-        // Always include the audio stream definition.
-        { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2, channelLayout: ['stereo'] }},
+        // --- FIX: Corrected the audio stream definition ---
+        // Removed `channelLayout` as it was causing a mismatch with `channelCount`.
+        // The API will now use the default stereo layout for 2 channels.
+        { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 }},
       ],
       muxStreams: [
         // Map both video and audio to the output streams.
