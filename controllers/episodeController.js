@@ -191,7 +191,7 @@ export const transcodeMp4ToHls = async (req, res) => {
   try {
     // Get the project ID from the authenticated client
     const projectId = await transcoderClient.getProjectId();
-    console.log(`[transcodeMp4ToHls] Using Project ID: ${projectId}`); // Log project ID
+    console.log(`[transcodeMp4ToHls] Using Project ID: ${projectId}`);
 
     const job = {
       inputUri: gcsFilePath,
@@ -202,17 +202,11 @@ export const transcodeMp4ToHls = async (req, res) => {
             key: 'video-sd',
             videoStream: {
               codec: 'h264',
-              h264: { // Codec-specific settings for H264
-                // These properties are now nested inside h264.codecSettings
-                codecSettings: { // THIS IS THE NEW NESTING LEVEL
-                  heightPixels: 360,
-                  widthPixels: 640,
-                  bitrateBps: 800000,
-                  frameRate: 30,
-                }
-                // You can add other H264 specific settings here if needed, e.g.:
-                // profile: 'high',
-                // crfLevel: 23,
+              h264: {
+                heightPixels: 360,
+                widthPixels: 640,
+                bitrateBps: 800000,
+                frameRate: 30,
               },
             },
           },
@@ -220,15 +214,11 @@ export const transcodeMp4ToHls = async (req, res) => {
             key: 'video-hd',
             videoStream: {
               codec: 'h264',
-              h264: { // Codec-specific settings for H264
-                // These properties are now nested inside h264.codecSettings
-                codecSettings: { // THIS IS THE NEW NESTING LEVEL
-                  heightPixels: 720,
-                  widthPixels: 1280,
-                  bitrateBps: 2500000,
-                  frameRate: 30,
-                }
-                // You can add other H264 settings here if needed
+              h264: {
+                heightPixels: 720,
+                widthPixels: 1280,
+                bitrateBps: 2500000,
+                frameRate: 30,
               },
             },
           },
@@ -253,7 +243,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     };
 
     console.log(`[transcodeMp4ToHls] Sending job request to Transcoder API:`);
-    console.log(JSON.stringify(request, null, 2)); // Log the full request payload for debugging
+    console.log(JSON.stringify(request, null, 2));
 
     const [operation] = await transcoderClient.createJob(request);
     const jobName = operation.name;
