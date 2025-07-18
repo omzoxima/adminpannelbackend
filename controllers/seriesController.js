@@ -66,14 +66,12 @@ export const createSeries = async (req, res) => {
     if (!title || !category_id) {
       return res.status(400).json({ error: 'Title and category_id are required' });
     }
-    let thumbnail_url = null;
+    let thumbnail_gcs_path = null;
     if (req.file) {
-      console.log('check');
       const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
       if (imageTypes.includes(req.file.mimetype)) {
-        console.log('image type');
-        const gcsPath = await uploadToGCS(req.file, 'thumbnails');
-        thumbnail_url = await getSignedUrl(gcsPath);
+        // For images, upload and store the GCS path
+        thumbnail_gcs_path = await uploadToGCS(req.file, 'thumbnails');
       } else {
         const hlsId = uuidv4();
         const hlsDir = path.join('/tmp', hlsId);
@@ -83,8 +81,7 @@ export const createSeries = async (req, res) => {
           const gcsFolder = `thumbnails/${hlsId}/`;
           await uploadHLSFolderToGCS(hlsDir, gcsFolder);
           const playlistPath = `${gcsFolder}playlist.m3u8`;
-          const signedUrl = await getSignedUrl(playlistPath);
-          thumbnail_url = signedUrl;
+          thumbnail_gcs_path = playlistPath;
         } catch (error) {
           console.error('Error processing thumbnail:', error);
           throw error;
@@ -96,13 +93,15 @@ export const createSeries = async (req, res) => {
     const newSeries = await Series.create({
       title,
       category_id,
-      thumbnail_url,
+      thumbnail_url: thumbnail_gcs_path,
       is_checkbox: is_checkbox === true || is_checkbox === 'true'
     });
+    // Generate signed URL for response if thumbnail exists
+    const signedThumbnailUrl = thumbnail_gcs_path ? await getSignedUrl(thumbnail_gcs_path) : null;
     res.status(201).json({
       uuid: newSeries.id,
       title: newSeries.title,
-      thumbnail_url: thumbnail_url,
+      thumbnail_url: signedThumbnailUrl,
       is_checkbox: newSeries.is_popular
     });
   } catch (error) {
