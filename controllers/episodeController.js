@@ -12,8 +12,15 @@ ffmpeg.setFfprobePath(ffprobe.path);
 
 async function hasAudioTrack(videoUrl) {
   return new Promise((resolve, reject) => {
-    // ffprobe requires a standard URL (like HTTPS), not a gs:// URI.
     ffmpeg(videoUrl)
+      // --- FIX for SIGSEGV ---
+      // Add input options to limit how much data ffprobe analyzes. This prevents
+      // it from consuming too much memory and crashing in constrained environments.
+      .inputOptions([
+        '-v error',            // Only show errors, suppress verbose info.
+        '-probesize 500K',     // Limit analysis to the first 500KB of the file.
+        '-analyzeduration 1M'  // Limit analysis to the first second of video data.
+      ])
       .ffprobe((err, data) => {
         if (err) {
           console.error('[hasAudioTrack] Error probing file URL:', err.message);
