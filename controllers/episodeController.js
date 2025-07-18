@@ -187,13 +187,23 @@ export const transcodeMp4ToHls = async (req, res) => {
           {
             key: 'video-sd',
             videoStream: {
-              codec: 'h264', preset: 'veryfast', heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30,
+              codec: 'h264',
+              h264: {},
+              heightPixels: 360,
+              widthPixels: 640,
+              bitrateBps: 800000,
+              frameRate: 30,
             },
           },
           {
             key: 'video-hd',
             videoStream: {
-              codec: 'h264', preset: 'veryfast', heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30,
+              codec: 'h264',
+              h264: {},
+              heightPixels: 720,
+              widthPixels: 1280,
+              bitrateBps: 2500000,
+              frameRate: 30,
             },
           },
           {
