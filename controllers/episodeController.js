@@ -10,16 +10,18 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffprobe from '@ffprobe-installer/ffprobe';
 ffmpeg.setFfprobePath(ffprobe.path);
 
-async function hasAudioTrack(gcsFilePath) {
+async function hasAudioTrack(videoUrl) {
   return new Promise((resolve, reject) => {
-    ffmpeg(gcsFilePath)
+    // ffprobe requires a standard URL (like HTTPS), not a gs:// URI.
+    ffmpeg(videoUrl)
       .ffprobe((err, data) => {
         if (err) {
-          console.error('[hasAudioTrack] Error probing file:', err);
-          return reject(err);
+          console.error('[hasAudioTrack] Error probing file URL:', err.message);
+          // Reject with a clear error message.
+          return reject(new Error(`ffprobe failed: ${err.message}`));
         }
         const hasAudio = data.streams.some(stream => stream.codec_type === 'audio');
-        console.log(`[hasAudioTrack] Audio track present in ${gcsFilePath}: ${hasAudio}`);
+        console.log(`[hasAudioTrack] Audio track present in remote file: ${hasAudio}`);
         resolve(hasAudio);
       });
   });
@@ -35,8 +37,8 @@ function isValidGcsUri(uri) {
 
 async function getSignedUrlForGcs(gcsFilePath, expirationSeconds = 3600) {
   const pathParts = gcsFilePath.replace('gs://', '').split('/');
-  const bucketName = pathParts[0];
-  const fileName = pathParts.slice(1).join('/');
+  const bucketName = pathParts.shift(); // First part is the bucket name
+  const fileName = pathParts.join('/'); // The rest is the object path
   const options = {
     version: 'v4',
     action: 'read',
@@ -45,6 +47,7 @@ async function getSignedUrlForGcs(gcsFilePath, expirationSeconds = 3600) {
   const [url] = await storageClient.bucket(bucketName).file(fileName).getSignedUrl(options);
   return url;
 }
+
 
 const { Episode, Series } = models;
 
@@ -186,46 +189,37 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 
 // --- MODIFIED FUNCTION ---
 export const transcodeMp4ToHls = async (req, res) => {
-  console.log(`[transcodeMp4ToHls] Received request to /transcode-hls`);
+  console.log('[transcodeMp4ToHls] Received request.');
   const { gcsFilePath } = req.body;
-
-  if (!gcsFilePath) {
-    console.error('[transcodeMp4ToHls] Error: Missing gcsFilePath in request body.');
-    return res.status(400).json({ error: 'Missing gcsFilePath in request body.' });
-  }
 
   if (!isValidGcsUri(gcsFilePath)) {
     console.error(`[transcodeMp4ToHls] Error: Invalid GCS file path format: ${gcsFilePath}`);
-    return res.status(400).json({ error: 'Invalid GCS file path format. Must start with gs://' });
+    return res.status(400).json({ error: 'Invalid or missing GCS file path. Must start with gs://' });
   }
 
   try {
-    // 1. Check for audio, but DON'T return an error if it's missing
-    const hasAudio = await hasAudioTrack(gcsFilePath);
-    if (hasAudio) {
-        console.log(`[transcodeMp4ToHls] Audio track found in ${gcsFilePath}. Including audio stream.`);
-    } else {
-        console.warn(`[transcodeMp4ToHls] No audio track found in ${gcsFilePath}. Proceeding with video-only transcoding.`);
-    }
+    // --- FIX: GENERATE SIGNED URL FOR FFPROBE ---
+    // ffprobe cannot read 'gs://' directly. We create a temporary, secure HTTPS URL for it.
+    // 10 minutes (600 seconds) is ample time for ffprobe to analyze the file header.
+    console.log(`[transcodeMp4ToHls] Generating signed URL for ffprobe...`);
+    const signedUrlForProbe = await getSignedUrlForGcs(gcsFilePath, 600);
 
+    // Pass the generated HTTPS URL to the audio check function.
+    const hasAudio = await hasAudioTrack(signedUrlForProbe);
+
+    // Proceed with transcoding job configuration
     const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
     const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
-    console.log(`[transcodeMp4ToHls] Input GCS Path: ${gcsFilePath}`);
-    console.log(`[transcodeMp4ToHls] Generated Output Base URI: ${outputBaseUri}`);
-
     const projectId = await transcoderClient.getProjectId();
+
+    console.log(`[transcodeMp4ToHls] Input GCS Path: ${gcsFilePath}`);
+    console.log(`[transcodeMp4ToHls] Output will be at: ${outputBaseUri}`);
     console.log(`[transcodeMp4ToHls] Using Project ID: ${projectId}`);
 
-    // 2. Build the configuration dynamically
+    // Dynamically build the configuration based on audio presence
     const elementaryStreams = [
-      {
-        key: 'video-sd',
-        videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 }},
-      },
-      {
-        key: 'video-hd',
-        videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 }},
-      },
+      { key: 'video-sd', videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 }}},
+      { key: 'video-hd', videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 }}},
     ];
 
     const muxStreams = [
@@ -233,68 +227,52 @@ export const transcodeMp4ToHls = async (req, res) => {
       { key: 'hd', container: 'ts', elementaryStreams: ['video-hd'] },
     ];
 
-    // 3. If audio exists, add the audio stream and link it to the muxStreams
     if (hasAudio) {
+      console.log('[transcodeMp4ToHls] Adding audio stream to the job configuration.');
       elementaryStreams.push({
         key: 'audio-stereo',
         audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2, channelLayout: ['stereo'] },
       });
-      // Add audio to both SD and HD streams
       muxStreams[0].elementaryStreams.push('audio-stereo');
       muxStreams[1].elementaryStreams.push('audio-stereo');
     }
 
-    const jobConfig = {
-      elementaryStreams,
-      muxStreams,
-      manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] }],
-    };
+    const jobConfig = { elementaryStreams, muxStreams, manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] }]};
+    const request = { parent: `projects/${projectId}/locations/${location}`, job: { inputUri: gcsFilePath, outputUri: outputBaseUri, config: jobConfig }};
 
-    const request = {
-      parent: `projects/${projectId}/locations/${location}`,
-      job: { inputUri: gcsFilePath, outputUri: outputBaseUri, config: jobConfig },
-    };
-
-    console.log(`[transcodeMp4ToHls] Sending job request to Transcoder API:`);
-    console.log(JSON.stringify(request, null, 2));
-
+    console.log('[transcodeMp4ToHls] Sending job request to Transcoder API.');
     const [operation] = await transcoderClient.createJob(request);
     const jobName = operation.name;
     console.log(`[transcodeMp4ToHls] Transcoder job created: ${jobName}`);
 
-    // (The rest of your job polling logic remains the same)
+    // NOTE: Polling is not ideal for production. Consider using Pub/Sub notifications.
     let jobState = 'PENDING';
     let jobResult;
     const startTime = Date.now();
-    const timeout = 10 * 60 * 1000;
+    const timeout = 10 * 60 * 1000; // 10-minute timeout
 
     while (jobState !== 'SUCCEEDED' && jobState !== 'FAILED' && (Date.now() - startTime < timeout)) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        const [jobStatus] = await transcoderClient.getJob({ name: jobName });
-        jobState = jobStatus.state;
-        jobResult = jobStatus;
-        console.log(`[transcodeMp4ToHls] Job ${jobName} status: ${jobState}`);
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Poll every 10 seconds
+      [jobResult] = await transcoderClient.getJob({ name: jobName });
+      jobState = jobResult.state;
+      console.log(`[transcodeMp4ToHls] Job ${jobName} status: ${jobState}`);
     }
 
     if (jobState === 'SUCCEEDED') {
-        console.log('[transcodeMp4ToHls] Transcoding job completed successfully!');
-        const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
-        const signedPlaylistUrl = await getSignedUrlForGcs(hlsPlaylistGcsPath);
-        res.json({
-            message: 'Transcoding job initiated and completed successfully.',
-            hlsPlaylistGcsPath,
-            signedPlaylistUrl,
-        });
+      console.log('[transcodeMp4ToHls] Transcoding job completed successfully!');
+      const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
+      const signedPlaylistUrl = await getSignedUrlForGcs(hlsPlaylistGcsPath);
+      res.json({ message: 'Transcoding successful.', hlsPlaylistGcsPath, signedPlaylistUrl });
     } else if (jobState === 'FAILED') {
-        console.error('[transcodeMp4ToHls] Transcoding job failed.');
-        console.error('[transcodeMp4ToHls] Error details:', jobResult.error);
-        res.status(500).json({ error: `Transcoding job failed: ${jobResult.error ? jobResult.error.message : 'Unknown error'}` });
+      console.error('[transcodeMp4ToHls] Transcoding job failed.', jobResult.error);
+      res.status(500).json({ error: `Transcoding job failed: ${jobResult.error?.message || 'Unknown error'}` });
     } else {
-        console.warn('[transcodeMp4ToHls] Transcoding job timed out or did not complete in time.');
-        res.status(500).json({ error: 'Transcoding job did not complete within the allowed time.' });
+      console.warn('[transcodeMp4ToHls] Transcoding job timed out.');
+      res.status(500).json({ error: 'Transcoding job did not complete within the allowed time.' });
     }
+
   } catch (error) {
-    console.error('[transcodeMp4ToHls] API Error during transcoding process:', error);
+    console.error('[transcodeMp4ToHls] An unexpected error occurred:', error);
     res.status(500).json({ error: error.message || 'Failed to initiate HLS transcoding.' });
   }
 };
