@@ -13,15 +13,17 @@ export const getAllSeries = async (req, res) => {
       include: [{ model: Category, attributes: ['name'] }],
       attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
     });
-    res.json(series.map(s => ({
+    // Generate fresh signed URLs for thumbnails
+    const seriesWithSignedUrls = await Promise.all(series.map(async s => ({
       id: s.id,
       title: s.title,
       is_popular: s.is_popular,
-      thumbnail_url: s.thumbnail_url,
+      thumbnail_url: s.thumbnail_url ? await getSignedUrl(s.thumbnail_url) : null,
       created_at: s.created_at,
       updated_at: s.updated_at,
       category_name: s.Category ? s.Category.name : null
     })));
+    res.json(seriesWithSignedUrls);
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to fetch series' });
   }
@@ -37,10 +39,12 @@ export const getSeriesById = async (req, res) => {
       attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
     });
     if (!series) return res.status(404).json({ error: 'Series not found' });
+    // Generate fresh signed URL for thumbnail
+    const signedThumbnailUrl = series.thumbnail_url ? await getSignedUrl(series.thumbnail_url) : null;
     res.json({
       id: series.id,
       title: series.title,
-      thumbnail_url: series.thumbnail_url,
+      thumbnail_url: signedThumbnailUrl,
       created_at: series.created_at,
       updated_at: series.updated_at,
       is_popular: series.is_popular,
