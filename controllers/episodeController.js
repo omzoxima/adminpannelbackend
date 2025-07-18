@@ -202,13 +202,15 @@ export const transcodeMp4ToHls = async (req, res) => {
             key: 'video-sd',
             videoStream: {
               codec: 'h264',
-              // These properties belong directly under videoStream
-              heightPixels: 360,
-              widthPixels: 640,
-              bitrateBps: 800000,
-              frameRate: 30,
-              h264: { // Codec-specific settings for H264 (e.g., profile, crfLevel)
-                // You can add specific H264 settings here if needed, e.g.:
+              h264: { // Codec-specific settings for H264
+                // These properties are now nested inside h264.codecSettings
+                codecSettings: { // THIS IS THE NEW NESTING LEVEL
+                  heightPixels: 360,
+                  widthPixels: 640,
+                  bitrateBps: 800000,
+                  frameRate: 30,
+                }
+                // You can add other H264 specific settings here if needed, e.g.:
                 // profile: 'high',
                 // crfLevel: 23,
               },
@@ -218,13 +220,15 @@ export const transcodeMp4ToHls = async (req, res) => {
             key: 'video-hd',
             videoStream: {
               codec: 'h264',
-              // These properties belong directly under videoStream
-              heightPixels: 720,
-              widthPixels: 1280,
-              bitrateBps: 2500000,
-              frameRate: 30,
               h264: { // Codec-specific settings for H264
-                // You can add specific H264 settings here if needed
+                // These properties are now nested inside h264.codecSettings
+                codecSettings: { // THIS IS THE NEW NESTING LEVEL
+                  heightPixels: 720,
+                  widthPixels: 1280,
+                  bitrateBps: 2500000,
+                  frameRate: 30,
+                }
+                // You can add other H264 settings here if needed
               },
             },
           },
