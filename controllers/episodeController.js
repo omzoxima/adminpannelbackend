@@ -166,19 +166,33 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
   }
 };
 
+
+// Define the transcodeMp4ToHls function as an exportable constant
 export const transcodeMp4ToHls = async (req, res) => {
+  console.log(`[transcodeMp4ToHls] Received request to /transcode-hls`);
   const { gcsFilePath } = req.body;
+
   if (!gcsFilePath) {
+    console.error('[transcodeMp4ToHls] Error: Missing gcsFilePath in request body.');
     return res.status(400).json({ error: 'Missing gcsFilePath in request body.' });
   }
+
   if (!isValidGcsUri(gcsFilePath)) {
+    console.error(`[transcodeMp4ToHls] Error: Invalid GCS file path format: ${gcsFilePath}`);
     return res.status(400).json({ error: 'Invalid GCS file path format. Must start with gs://' });
   }
+
+  // Generate a unique output folder for this transcoding job
   const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
   const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
+  console.log(`[transcodeMp4ToHls] Input GCS Path: ${gcsFilePath}`);
+  console.log(`[transcodeMp4ToHls] Generated Output Base URI: ${outputBaseUri}`);
+
   try {
     // Get the project ID from the authenticated client
     const projectId = await transcoderClient.getProjectId();
+    console.log(`[transcodeMp4ToHls] Using Project ID: ${projectId}`); // Log project ID
+
     const job = {
       inputUri: gcsFilePath,
       outputUri: outputBaseUri,
@@ -188,22 +202,30 @@ export const transcodeMp4ToHls = async (req, res) => {
             key: 'video-sd',
             videoStream: {
               codec: 'h264',
-              h264: {},
+              // These properties belong directly under videoStream
               heightPixels: 360,
               widthPixels: 640,
               bitrateBps: 800000,
               frameRate: 30,
+              h264: { // Codec-specific settings for H264 (e.g., profile, crfLevel)
+                // You can add specific H264 settings here if needed, e.g.:
+                // profile: 'high',
+                // crfLevel: 23,
+              },
             },
           },
           {
             key: 'video-hd',
             videoStream: {
               codec: 'h264',
-              h264: {},
+              // These properties belong directly under videoStream
               heightPixels: 720,
               widthPixels: 1280,
               bitrateBps: 2500000,
               frameRate: 30,
+              h264: { // Codec-specific settings for H264
+                // You can add specific H264 settings here if needed
+              },
             },
           },
           {
@@ -220,40 +242,59 @@ export const transcodeMp4ToHls = async (req, res) => {
         ],
       },
     };
+
     const request = {
       parent: `projects/${projectId}/locations/${location}`,
       job: job,
     };
+
+    console.log(`[transcodeMp4ToHls] Sending job request to Transcoder API:`);
+    console.log(JSON.stringify(request, null, 2)); // Log the full request payload for debugging
+
     const [operation] = await transcoderClient.createJob(request);
     const jobName = operation.name;
+    console.log(`[transcodeMp4ToHls] Transcoder job created: ${jobName}`);
+
+    // --- IMPORTANT: For a production API, you would typically NOT wait here. ---
+    // Instead, you'd respond immediately with the jobId and rely on Pub/Sub
+    // notifications from Transcoder API to update your system when the job completes.
+    // This waiting loop is for demonstration purposes to show the full flow in one request.
     let jobState = 'PENDING';
     let jobResult;
     const startTime = Date.now();
-    const timeout = 10 * 60 * 1000;
+    const timeout = 10 * 60 * 1000; // 10 minutes timeout for the job to complete
+
     while (jobState !== 'SUCCEEDED' && jobState !== 'FAILED' && (Date.now() - startTime < timeout)) {
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait for 10 seconds
       const [jobStatus] = await transcoderClient.getJob({ name: jobName });
       jobState = jobStatus.state;
       jobResult = jobStatus;
+      console.log(`[transcodeMp4ToHls] Job ${jobName} status: ${jobState}`);
     }
+
     if (jobState === 'SUCCEEDED') {
+      console.log('[transcodeMp4ToHls] Transcoding job completed successfully!');
       const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
       const signedPlaylistUrl = await getSignedUrlForGcs(hlsPlaylistGcsPath);
       const sampleSegmentFileName = `${uniqueOutputFolder}segment_00000.ts`;
       const sampleSegmentGcsPath = `gs://${outputBucketName}/${sampleSegmentFileName}`;
       const signedSampleSegmentUrl = await getSignedUrlForGcs(sampleSegmentGcsPath);
       res.json({
-        message: 'Transcoding job completed successfully.',
+        message: 'Transcoding job initiated and completed successfully (for demonstration).',
         hlsPlaylistGcsPath,
         signedPlaylistUrl,
         signedSampleSegmentUrl,
       });
     } else if (jobState === 'FAILED') {
+      console.error('[transcodeMp4ToHls] Transcoding job failed.');
+      console.error('[transcodeMp4ToHls] Error details:', jobResult.error);
       res.status(500).json({ error: `Transcoding job failed: ${jobResult.error ? jobResult.error.message : 'Unknown error'}` });
     } else {
+      console.warn('[transcodeMp4ToHls] Transcoding job timed out or did not complete in time.');
       res.status(500).json({ error: 'Transcoding job did not complete within the allowed time.' });
     }
   } catch (error) {
+    console.error('[transcodeMp4ToHls] API Error during transcoding process:', error);
     res.status(500).json({ error: error.message || 'Failed to initiate HLS transcoding.' });
   }
-}; 
+};
