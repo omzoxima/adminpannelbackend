@@ -7,7 +7,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import convertToHLS from '../utils/convertToHLS.js';
 
-//const location = 'us-central1'; // Set your region
+const location = 'asia-south1'; // Set your region
 const outputBucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
 const transcoderClient = new TranscoderServiceClient();
 const storageClient = new Storage();
