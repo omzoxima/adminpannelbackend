@@ -1,9 +1,33 @@
 import models from '../models/index.js';
-import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploadHLSFolderToGCS } from '../services/gcsStorage.js';
+import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploadHLSFolderToGCS, getUploadSignedUrl } from '../services/gcsStorage.js';
+import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
+import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
 import convertToHLS from '../utils/convertToHLS.js';
+
+//const location = 'us-central1'; // Set your region
+const outputBucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
+const transcoderClient = new TranscoderServiceClient();
+const storageClient = new Storage();
+
+function isValidGcsUri(uri) {
+  return typeof uri === 'string' && uri.startsWith('gs://') && uri.length > 5;
+}
+
+async function getSignedUrlForGcs(gcsFilePath, expirationSeconds = 3600) {
+  const pathParts = gcsFilePath.replace('gs://', '').split('/');
+  const bucketName = pathParts[0];
+  const fileName = pathParts.slice(1).join('/');
+  const options = {
+    version: 'v4',
+    action: 'read',
+    expires: Date.now() + expirationSeconds * 1000,
+  };
+  const [url] = await storageClient.bucket(bucketName).file(fileName).getSignedUrl(options);
+  return url;
+}
 
 const { Episode, Series } = models;
 
@@ -121,5 +145,105 @@ export const uploadMultilingual = async (req, res) => {
         fs.rm(dir, { recursive: true, force: true })
           .catch(e => console.error('Cleanup error:', e))
     ));
+  }
+};
+
+export const generateLanguageVideoUploadUrls = async (req, res) => {
+  try {
+    const { videos = [], folder = 'videos' } = req.body;
+    if (!Array.isArray(videos) || videos.length === 0) {
+      return res.status(400).json({ error: 'No videos specified' });
+    }
+    const results = [];
+    for (const { language, extension = '.mp4' } of videos) {
+      const langFolder = language ? `${folder}/${language}` : folder;
+      const { url, gcsPath } = await getUploadSignedUrl(langFolder, extension);
+      results.push({ language, uploadUrl: url, gcsPath });
+    }
+    res.json({ uploads: results });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to generate upload URLs' });
+  }
+};
+
+export const transcodeMp4ToHls = async (req, res) => {
+  const { gcsFilePath } = req.body;
+  if (!gcsFilePath) {
+    return res.status(400).json({ error: 'Missing gcsFilePath in request body.' });
+  }
+  if (!isValidGcsUri(gcsFilePath)) {
+    return res.status(400).json({ error: 'Invalid GCS file path format. Must start with gs://' });
+  }
+  const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
+  const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
+  try {
+    // Get the project ID from the authenticated client
+    const projectId = await transcoderClient.getProjectId();
+    const job = {
+      inputUri: gcsFilePath,
+      outputUri: outputBaseUri,
+      config: {
+        elementaryStreams: [
+          {
+            key: 'video-sd',
+            videoStream: {
+              codec: 'h264', preset: 'veryfast', heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30,
+            },
+          },
+          {
+            key: 'video-hd',
+            videoStream: {
+              codec: 'h264', preset: 'veryfast', heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30,
+            },
+          },
+          {
+            key: 'audio-stereo',
+            audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 },
+          },
+        ],
+        muxStreams: [
+          { key: 'sd', container: 'ts', elementaryStreams: ['video-sd', 'audio-stereo'] },
+          { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] },
+        ],
+        manifests: [
+          { fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] },
+        ],
+      },
+    };
+    const request = {
+      parent: `projects/${projectId}/locations/${location}`,
+      job: job,
+    };
+    const [operation] = await transcoderClient.createJob(request);
+    const jobName = operation.name;
+    let jobState = 'PENDING';
+    let jobResult;
+    const startTime = Date.now();
+    const timeout = 10 * 60 * 1000;
+    while (jobState !== 'SUCCEEDED' && jobState !== 'FAILED' && (Date.now() - startTime < timeout)) {
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      const [jobStatus] = await transcoderClient.getJob({ name: jobName });
+      jobState = jobStatus.state;
+      jobResult = jobStatus;
+    }
+    if (jobState === 'SUCCEEDED') {
+      const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
+      const signedPlaylistUrl = await getSignedUrlForGcs(hlsPlaylistGcsPath);
+      const sampleSegmentFileName = `${uniqueOutputFolder}segment_00000.ts`;
+      const sampleSegmentGcsPath = `gs://${outputBucketName}/${sampleSegmentFileName}`;
+      const signedSampleSegmentUrl = await getSignedUrlForGcs(sampleSegmentGcsPath);
+      res.json({
+        message: 'Transcoding job completed successfully.',
+        hlsPlaylistGcsPath,
+        signedPlaylistUrl,
+        signedSampleSegmentUrl,
+      });
+    } else if (jobState === 'FAILED') {
+      res.status(500).json({ error: `Transcoding job failed: ${jobResult.error ? jobResult.error.message : 'Unknown error'}` });
+    } else {
+      res.status(500).json({ error: 'Transcoding job did not complete within the allowed time.' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to initiate HLS transcoding.' });
   }
 }; 

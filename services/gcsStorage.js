@@ -82,6 +82,19 @@ export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
   }
 }
  
+// Generate v4 signed URL for upload
+export async function getUploadSignedUrl(folder, extension, expiryMinutes = 15) {
+  const fileName = `${folder}/${uuidv4()}${extension.startsWith('.') ? extension : '.' + extension}`;
+  const file = storage.bucket(bucketName).file(fileName);
+  const [url] = await file.getSignedUrl({
+    version: 'v4',
+    action: 'write',
+    expires: Date.now() + expiryMinutes * 60 * 1000,
+   
+  });
+  return { url, gcsPath: fileName };
+}
+ 
 // List all .ts segment files in a GCS folder
 export async function listSegmentFiles(gcsFolder) {
   const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
