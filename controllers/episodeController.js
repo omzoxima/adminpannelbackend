@@ -6,7 +6,24 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
 import convertToHLS from '../utils/convertToHLS.js';
+import ffmpeg from 'fluent-ffmpeg';
+import ffprobe from '@ffprobe-installer/ffprobe';
+ffmpeg.setFfprobePath(ffprobe.path);
 
+async function hasAudioTrack(gcsFilePath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(gcsFilePath)
+      .ffprobe((err, data) => {
+        if (err) {
+          console.error('[hasAudioTrack] Error probing file:', err);
+          return reject(err);
+        }
+        const hasAudio = data.streams.some(stream => stream.codec_type === 'audio');
+        console.log(`[hasAudioTrack] Audio track present in ${gcsFilePath}: ${hasAudio}`);
+        resolve(hasAudio);
+      });
+  });
+}
 const location = 'asia-south1'; // Set your region
 const outputBucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
 const transcoderClient = new TranscoderServiceClient();
@@ -182,6 +199,18 @@ export const transcodeMp4ToHls = async (req, res) => {
     return res.status(400).json({ error: 'Invalid GCS file path format. Must start with gs://' });
   }
 
+  // Check for audio track
+  try {
+    const hasAudio = await hasAudioTrack(gcsFilePath);
+    if (!hasAudio) {
+      console.error('[transcodeMp4ToHls] Error: Input file has no audio track.');
+      return res.status(400).json({ error: 'Input file has no audio track.' });
+    }
+  } catch (error) {
+    console.error('[transcodeMp4ToHls] Error during audio track check:', error);
+    return res.status(500).json({ error: 'Failed to verify audio track in input file.' });
+  }
+
   // Generate a unique output folder for this transcoding job
   const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
   const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
@@ -224,7 +253,12 @@ export const transcodeMp4ToHls = async (req, res) => {
           },
           {
             key: 'audio-stereo',
-            audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 },
+            audioStream: {
+              codec: 'aac',
+              bitrateBps: 128000,
+              channelCount: 2,
+              channelLayout: ['stereo'],
+            },
           },
         ],
         muxStreams: [
@@ -252,7 +286,6 @@ export const transcodeMp4ToHls = async (req, res) => {
     // --- IMPORTANT: For a production API, you would typically NOT wait here. ---
     // Instead, you'd respond immediately with the jobId and rely on Pub/Sub
     // notifications from Transcoder API to update your system when the job completes.
-    // This waiting loop is for demonstration purposes to show the full flow in one request.
     let jobState = 'PENDING';
     let jobResult;
     const startTime = Date.now();
@@ -274,7 +307,7 @@ export const transcodeMp4ToHls = async (req, res) => {
       const sampleSegmentGcsPath = `gs://${outputBucketName}/${sampleSegmentFileName}`;
       const signedSampleSegmentUrl = await getSignedUrlForGcs(sampleSegmentGcsPath);
       res.json({
-        message: 'Transcoding job initiated and completed successfully (for demonstration).',
+        message: 'Transcoding job initiated and completed successfully.',
         hlsPlaylistGcsPath,
         signedPlaylistUrl,
         signedSampleSegmentUrl,
