@@ -1,5 +1,5 @@
 import models from '../models/index.js';
-import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploadHLSFolderToGCS, getUploadSignedUrl } from '../services/gcsStorage.js';
+import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploadHLSFolderToGCS, getUploadSignedUrl,listSegmentFilesForTranscode } from '../services/gcsStorage.js';
 import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
 import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
