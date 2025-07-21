@@ -97,7 +97,10 @@ export async function getUploadSignedUrl(folder, extension, expiryMinutes = 15) 
  
 // List all .ts segment files in a GCS folder
 export async function listSegmentFiles(gcsFolder) {
-  const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
+  console.log(`[listSegmentFiles] Querying bucket: ${bucketName}, prefix: ${gcsFolder}`);
+const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
+console.log(`[listSegmentFiles] Found ${files.length} files:`, files.map(f => f.name));
+ // const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
   return files.filter(f => f.name.endsWith('.ts')).map(f => f.name);
 }
  
