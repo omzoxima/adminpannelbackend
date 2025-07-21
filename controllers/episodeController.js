@@ -252,30 +252,41 @@ export const transcodeMp4ToHls = async (req, res) => {
 
     // Step 4: Generate signed URLs for playlist and segments
     console.log('[transcodeMp4ToHls] Transcoding completed, generating signed URLs');
-    const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
-    const gcsFolder = hlsPlaylistGcsPath.replace(/playlist\.m3u8$/, '');
+    const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`; // gs://bucket/folder/playlist.m3u8
+    const gcsFolder = hlsPlaylistGcsPath.replace(/playlist\.m3u8$/, ''); // gs://bucket/folder/
 
     // List segment files
-    const segmentFiles = await listSegmentFilesForTranscode(gcsFolder);
+    const segmentFiles = await listSegmentFilesForTranscode(gcsFolder); // returns gs://bucket/...
     if (!segmentFiles.length) {
       throw new Error('No segment files found in output folder');
     }
 
+    // Convert full gs://... URIs to object paths for signing
+    const segmentObjectPaths = segmentFiles.map(seg => seg.replace(`gs://${outputBucketName}/`, ''));
+
     // Generate signed URLs for segments
     const segmentSignedUrls = {};
     await Promise.all(
-      segmentFiles.map(async (seg) => {
-        segmentSignedUrls[seg] = await getSignedUrl(seg, 60 * 24 * 7); // 7-day expiration
+      segmentObjectPaths.map(async (seg, idx) => {
+        segmentSignedUrls[segmentFiles[idx]] = await getSignedUrl(seg, 60 * 24 * 7); // 7-day expiration
       })
     );
 
+    // For playlist, extract object path
+    const playlistObjectPath = hlsPlaylistGcsPath.replace(`gs://${outputBucketName}/`, '');
+
     // Update playlist with signed segment URLs
-    let playlistText = await downloadFromGCS(hlsPlaylistGcsPath);
-    playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
-    await uploadTextToGCS(hlsPlaylistGcsPath, playlistText, 'application/x-mpegURL');
+    let playlistText = await downloadFromGCS(playlistObjectPath);
+    // Replace all .ts segment references (hd, sd, segment_*) with signed URLs
+    playlistText = playlistText.replace(/^(.*\.ts)$/gm, (match) => {
+      // Try to find the full gs://... path for this segment
+      const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
+      return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
+    });
+    await uploadTextToGCS(playlistObjectPath, playlistText, 'application/x-mpegURL');
 
     // Generate signed URL for playlist
-    const signedPlaylistUrl = await getSignedUrl(hlsPlaylistGcsPath, 60 * 24 * 7);
+    const signedPlaylistUrl = await getSignedUrl(playlistObjectPath, 60 * 24 * 7);
 
     // Step 5: Update episode subtitles
     const subtitleEntry = {
