@@ -265,7 +265,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     const segmentSignedUrls = {};
     await Promise.all(
       segmentFiles.map(async (seg) => {
-        segmentSignedUrls[seg] = await getSignedUrl(seg, 7 * 24 * 60 * 60); // 7-day expiration
+        segmentSignedUrls[seg] = await getSignedUrl(seg, 60 * 24 * 7); // 7-day expiration
       })
     );
 
@@ -275,7 +275,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     await uploadTextToGCS(hlsPlaylistGcsPath, playlistText, 'application/x-mpegURL');
 
     // Generate signed URL for playlist
-    const signedPlaylistUrl = await getSignedUrl(hlsPlaylistGcsPath, 7 * 24 * 60 * 60);
+    const signedPlaylistUrl = await getSignedUrl(hlsPlaylistGcsPath, 60 * 24 * 7);
 
     // Step 5: Update episode subtitles
     const subtitleEntry = {
