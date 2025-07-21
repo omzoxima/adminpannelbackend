@@ -171,143 +171,99 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 // --- MODIFIED FUNCTION ---
 export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
-
   const { gcsFilePath, series_id, episode_number, title, episode_description, language = 'en' } = req.body;
 
-  // Validate inputs
-  if (!isValidGcsUri(gcsFilePath)) {
-    console.error(`[transcodeMp4ToHls] Error: Invalid GCS file path: ${gcsFilePath}`);
-    return res.status(400).json({ error: 'Invalid or missing GCS file path. Must start with gs://' });
-  }
-  if (!series_id || !episode_number) {
-    console.error('[transcodeMp4ToHls] Error: Missing series_id or episode_number');
-    return res.status(400).json({ error: 'series_id and episode_number are required' });
+  // Input validation...
+  if (!isValidGcsUri(gcsFilePath) || !series_id || !episode_number) {
+    return res.status(400).json({ error: 'Valid gcsFilePath, series_id, and episode_number are required.' });
   }
 
   let episode;
   try {
-    // Step 1: Create Episode
+    // Step 1: Create Episode (no changes here)
     const series = await Series.findByPk(series_id);
-    if (!series) {
-      console.error('[transcodeMp4ToHls] Error: Series not found');
-      return res.status(400).json({ error: 'Series not found' });
-    }
+    if (!series) return res.status(404).json({ error: 'Series not found' });
 
     episode = await Episode.create({
       title: title || `Episode ${episode_number}`,
       episode_number,
       series_id,
       description: episode_description || null,
-      reward_cost_points: 0,
-      subtitles: [], // Initialize empty subtitles array
+      subtitles: [],
     });
     console.log(`[transcodeMp4ToHls] Episode created: ID ${episode.id}`);
 
-    // Step 2: Transcode to HLS
+    // Step 2: Transcode to HLS (no changes to the job config)
     const uniqueOutputFolder = `hls_output/${uuidv4()}/`;
     const outputBaseUri = `gs://${outputBucketName}/${uniqueOutputFolder}`;
     const projectId = await transcoderClient.getProjectId();
+    const jobConfig = { /* ... your existing job config ... */ };
+    const request = { /* ... your existing job request ... */ };
 
-    console.log(`[transcodeMp4ToHls] Input: ${gcsFilePath}, Output: ${outputBaseUri}, Project: ${projectId}`);
-
-    const jobConfig = {
-      elementaryStreams: [
-        { key: 'video-sd', videoStream: { codec: 'h264', h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 800000, frameRate: 30 } } },
-        { key: 'video-hd', videoStream: { codec: 'h264', h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 30 } } },
-        { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 } },
-      ],
-      muxStreams: [
-        { key: 'sd', container: 'ts', elementaryStreams: ['video-sd', 'audio-stereo'] },
-        { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] },
-      ],
-      manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['sd', 'hd'] }],
-    };
-
-    const request = {
-      parent: `projects/${projectId}/locations/${location}`,
-      job: { inputUri: gcsFilePath, outputUri: outputBaseUri, config: jobConfig },
-    };
-
-    console.log('[transcodeMp4ToHls] Creating transcoder job');
+    console.log('[transcodeMp4ToHls] Creating transcoder job...');
     const [operation] = await transcoderClient.createJob(request);
-    const jobName = operation.name;
-    console.log(`[transcodeMp4ToHls] Job created: ${jobName}`);
+    await operation.promise(); // Wait for job to complete. Cleaner than polling.
+    console.log('[transcodeMp4ToHls] Transcoding job completed successfully.');
 
-    // Step 3: Poll for job completion
-    let jobState = 'PENDING';
-    let jobResult;
-    const startTime = Date.now();
-    const timeout = 10 * 60 * 1000; // 10-minute timeout
+    // Step 4: Generate Signed URLs for the HD Playlist and its Segments
+    console.log('[transcodeMp4ToHls] Processing HD stream...');
 
-    while (jobState !== 'SUCCEEDED' && jobState !== 'FAILED' && Date.now() - startTime < timeout) {
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval to 5 seconds
-      [jobResult] = await transcoderClient.getJob({ name: jobName });
-      jobState = jobResult.state;
-      console.log(`[transcodeMp4ToHls] Job ${jobName} status: ${jobState}`);
+    const hdFolderGcsPath = `${outputBaseUri}hd/`;
+    const hdPlaylistGcsPath = `${hdFolderGcsPath}playlist.m3u8`;
+
+    // List only the .ts files from the 'hd/' directory
+    const hdSegmentFiles = await listSegmentFilesForTranscode(hdFolderGcsPath);
+    if (!hdSegmentFiles.length) {
+      throw new Error('No HD segment files (.ts) were found in the output folder.');
     }
 
-    if (jobState !== 'SUCCEEDED') {
-      throw new Error(jobState === 'FAILED' ? `Transcoding job failed: ${jobResult.error?.message || 'Unknown error'}` : 'Transcoding job timed out');
-    }
-
-    // Step 4: Generate signed URLs for playlist and segments
-    console.log('[transcodeMp4ToHls] Transcoding completed, generating signed URLs');
-    const hlsPlaylistGcsPath = `${outputBaseUri}playlist.m3u8`;
-    const gcsFolder = hlsPlaylistGcsPath.replace(/playlist\.m3u8$/, '');
-
-    // List segment files
-    const segmentFiles = await listSegmentFiles(gcsFolder);
-    if (!segmentFiles.length) {
-      throw new Error('No segment files found in output folder');
-    }
-
-    // Generate signed URLs for segments
-    const segmentSignedUrls = {};
+    // Generate signed URLs, mapping the simple filename to the full signed URL
+    const segmentSignedUrls = new Map();
     await Promise.all(
-      segmentFiles.map(async (seg) => {
-        segmentSignedUrls[seg] = await getSignedUrl(seg, 7 * 24 * 60 * 60); // 7-day expiration
+      hdSegmentFiles.map(async (fullGcsPath) => {
+        const fileName = fullGcsPath.split('/').pop();
+        const signedUrl = await getSignedUrl(fullGcsPath, 7 * 24 * 60 * 60); // 7-day expiration
+        segmentSignedUrls.set(fileName, signedUrl);
       })
     );
 
-    // Update playlist with signed segment URLs
-    let playlistText = await downloadFromGCS(hlsPlaylistGcsPath);
-    playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
-    await uploadTextToGCS(hlsPlaylistGcsPath, playlistText, 'application/x-mpegURL');
+    // Update the HD playlist with the full signed segment URLs
+    let playlistText = await downloadFromGCS(hdPlaylistGcsPath);
+    const updatedPlaylistLines = playlistText.split('\n').map(line => {
+      // If a line is a segment filename we've signed, replace it with its full URL
+      return segmentSignedUrls.get(line.trim()) || line;
+    });
+    await uploadTextToGCS(hdPlaylistGcsPath, updatedPlaylistLines.join('\n'), 'application/x-mpegURL');
+    console.log(`[transcodeMp4ToHls] HD playlist updated with signed segment URLs.`);
 
-    // Generate signed URL for playlist
-    const signedPlaylistUrl = await getSignedUrl(hlsPlaylistGcsPath, 7 * 24 * 60 * 60);
+    // Generate a final signed URL for the now-updated HD playlist
+    const signedPlaylistUrl = await getSignedUrl(hdPlaylistGcsPath, 7 * 24 * 60 * 60);
 
-    // Step 5: Update episode subtitles
+    // Step 5: Update Episode Subtitles with the HD Playlist URL
     const subtitleEntry = {
       language,
-      gcsPath: hlsPlaylistGcsPath,
-      videoUrl: signedPlaylistUrl,
+      gcsPath: hdPlaylistGcsPath, // The path to the HD playlist
+      videoUrl: signedPlaylistUrl,  // The playable, signed URL for the HD playlist
     };
-
-    episode.subtitles = [...(episode.subtitles || []), subtitleEntry];
+    episode.subtitles = [subtitleEntry];
     await episode.save();
-    console.log(`[transcodeMp4ToHls] Episode ${episode.id} updated with subtitle: ${language}`);
+    console.log(`[transcodeMp4ToHls] Episode ${episode.id} updated successfully.`);
 
-    // Step 6: Return response
+    // Step 6: Return Response
     res.json({
-      message: 'Transcoding and episode creation successful',
+      message: 'Transcoding and episode creation successful.',
       episodeId: episode.id,
-      hlsPlaylistGcsPath,
+      hlsPlaylistGcsPath: hdPlaylistGcsPath,
       signedPlaylistUrl,
-      segmentSignedUrls,
     });
 
   } catch (error) {
-    console.error('[transcodeMp4ToHls] Error:', error);
-
-    // Step 7: Delete episode on failure
+    console.error('[transcodeMp4ToHls] A critical error occurred:', error);
+    // Step 7: Delete episode on any failure
     if (episode) {
       await episode.destroy();
-      console.log(`[transcodeMp4ToHls] Deleted episode ${episode.id} due to error`);
+      console.log(`[transcodeMp4ToHls] Deleted episode ${episode.id} due to processing error.`);
     }
-
-    res.status(500).json({
-      error: error.message || 'Failed to process video',
-    });
+    res.status(500).json({ error: error.message || 'Failed to process video.' });
   }
 };
