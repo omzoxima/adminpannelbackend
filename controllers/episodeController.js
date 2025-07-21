@@ -276,19 +276,18 @@ export const transcodeMp4ToHls = async (req, res) => {
         const hdTsObjectPath = hdSegmentFile.replace(`gs://${outputBucketName}/`, '');
         hdTsSignedUrl = await getSignedUrl(hdTsObjectPath, 60 * 24 * 7);
       }
-      const sdSegmentFile = segmentFiles.find(f => /\/sd\d+\.ts$/.test(f));
+      /*const sdSegmentFile = segmentFiles.find(f => /\/sd\d+\.ts$/.test(f));
       if (sdSegmentFile) {
         const sdTsObjectPath = sdSegmentFile.replace(`gs://${outputBucketName}/`, '');
         sdTsSignedUrl = await getSignedUrl(sdTsObjectPath, 60 * 24 * 7);
-      }
+      }*/
       // Step 4: Add to subtitles array
       subtitles.push({
         gcsPath: hlsPlaylistGcsPath.replace(`gs://${outputBucketName}/`, ''),
         language,
-        videoUrl: signedPlaylistUrl,
+        videoUrl: hdTsSignedUrl,
         hdTsPath: hdSegmentFile ? hdSegmentFile.replace(`gs://${outputBucketName}/`, '') : null,
-        hdTsSignedUrl,
-        sdTsSignedUrl,
+       
       });
     }
     episode.subtitles = subtitles;
