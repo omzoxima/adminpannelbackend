@@ -155,6 +155,13 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
     if (!Array.isArray(videos) || videos.length === 0) {
       return res.status(400).json({ error: 'No videos specified' });
     }
+    if (videos.length > 2) {
+      return res.status(400).json({ error: 'Maximum of 2 videos allowed' });
+    }
+    if (!videos.every(v => /^[a-z]{2}(-[a-z]{2})?$/.test(v.language))) {
+      return res.status(400).json({ error: 'Invalid language code in videos array' });
+    }
+
     const results = [];
     for (const { language, extension = '.mp4' } of videos) {
       const langFolder = language ? `${folder}/${language}` : folder;
@@ -163,6 +170,7 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
     }
     res.json({ uploads: results });
   } catch (error) {
+    console.error('[generateLanguageVideoUploadUrls] Error:', error);
     res.status(500).json({ error: error.message || 'Failed to generate upload URLs' });
   }
 };
