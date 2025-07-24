@@ -34,9 +34,9 @@ export const getSeriesById = async (req, res) => {
     const series = await Series.findByPk(req.params.id, {
       include: [
         { model: Category, attributes: ['name'] },
-        { model: Episode, attributes: ['title', 'episode_number', 'description'], order: [['episode_number', 'ASC']] }
+        { model: Episode, attributes: ['id','title', 'episode_number', 'description'], order: [['episode_number', 'ASC']] }
       ],
-      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
+      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular','status']
     });
     if (!series) return res.status(404).json({ error: 'Series not found' });
     // Generate fresh signed URL for thumbnail
@@ -48,8 +48,10 @@ export const getSeriesById = async (req, res) => {
       created_at: series.created_at,
       updated_at: series.updated_at,
       is_popular: series.is_popular,
+      status: series.status,
       category_name: series.Category ? series.Category.name : null,
       episodes: series.Episodes ? series.Episodes.map(e => ({
+        id: e.id,
         title: e.title,
         episode_number: e.episode_number,
         description: e.description
