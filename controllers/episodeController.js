@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs/promises';
 import convertToHLS from '../utils/convertToHLS.js';
+import { Op } from 'sequelize';
 
 const location = 'asia-south1'; // Set your region
 const outputBucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
@@ -348,8 +349,8 @@ export const updateEpisode = async (req, res) => {
         where: {
           episode_number,
           series_id: episode.series_id,
-          id: { [models.Sequelize.Op.ne]: id }
-        }
+          id: { [Op.ne]: id }      
+          }
       });
       if (exists) {
         return res.status(400).json({ error: 'Episode number already exists in this series' });
