@@ -20,6 +20,10 @@ module.exports = (sequelize) => {
     thumbnail_url: {
       type: DataTypes.STRING
     },
+    status: {
+      type: DataTypes.ENUM('Draft', 'Active', 'Inactive'),
+      defaultValue: 'Draft'
+    },
     category_id: {
       type: DataTypes.UUID,
       references: {

@@ -314,3 +314,53 @@ export const transcodeMp4ToHls = async (req, res) => {
     });
   }
 };
+
+export const deleteEpisode = async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: 'Episode id is required' });
+    }
+    const episode = await Episode.findByPk(id);
+    if (!episode) {
+      return res.status(404).json({ error: 'Episode not found' });
+    }
+    await episode.destroy();
+    res.json({ message: 'Episode deleted successfully', id });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to delete episode' });
+  }
+};
+
+export const updateEpisode = async (req, res) => {
+  try {
+    const { id, episode_number, title, description } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: 'Episode id is required' });
+    }
+    const episode = await Episode.findByPk(id);
+    if (!episode) {
+      return res.status(404).json({ error: 'Episode not found' });
+    }
+    // If episode_number is being updated, check for uniqueness in the same series
+    if (typeof episode_number !== 'undefined' && episode_number !== episode.episode_number) {
+      const exists = await Episode.findOne({
+        where: {
+          episode_number,
+          series_id: episode.series_id,
+          id: { [models.Sequelize.Op.ne]: id }
+        }
+      });
+      if (exists) {
+        return res.status(400).json({ error: 'Episode number already exists in this series' });
+      }
+      episode.episode_number = episode_number;
+    }
+    if (typeof title !== 'undefined') episode.title = title;
+    if (typeof description !== 'undefined') episode.description = description;
+    await episode.save();
+    res.json({ message: 'Episode updated successfully', id: episode.id });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to update episode' });
+  }
+};

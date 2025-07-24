@@ -62,39 +62,38 @@ export const getSeriesById = async (req, res) => {
 
 export const createSeries = async (req, res) => {
   try {
-    const { title, category_id, is_checkbox } = req.body;
-    if (!title || !category_id) {
-      return res.status(400).json({ error: 'Title and category_id are required' });
+    const { title, category_id, is_popular } = req.body;
+    if (!title || !category_id || typeof is_popular === 'undefined' || !req.file) {
+      return res.status(400).json({ error: 'Title, category_id, is_popular, and file are required' });
     }
     let thumbnail_gcs_path = null;
-    if (req.file) {
-      const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-      if (imageTypes.includes(req.file.mimetype)) {
-        // For images, upload and store the GCS path
-        thumbnail_gcs_path = await uploadToGCS(req.file, 'thumbnails');
-      } else {
-        const hlsId = uuidv4();
-        const hlsDir = path.join('/tmp', hlsId);
-        await fs.mkdir(hlsDir, { recursive: true });
-        try {
-          await convertToHLS(req.file.buffer, hlsDir);
-          const gcsFolder = `thumbnails/${hlsId}/`;
-          await uploadHLSFolderToGCS(hlsDir, gcsFolder);
-          const playlistPath = `${gcsFolder}playlist.m3u8`;
-          thumbnail_gcs_path = playlistPath;
-        } catch (error) {
-          console.error('Error processing thumbnail:', error);
-          throw error;
-        } finally {
-          await fs.rm(hlsDir, { recursive: true, force: true }).catch(e => console.error('Cleanup error:', e));
-        }
+    const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (imageTypes.includes(req.file.mimetype)) {
+      // For images, upload and store the GCS path
+      thumbnail_gcs_path = await uploadToGCS(req.file, 'thumbnails');
+    } else {
+      const hlsId = uuidv4();
+      const hlsDir = path.join('/tmp', hlsId);
+      await fs.mkdir(hlsDir, { recursive: true });
+      try {
+        await convertToHLS(req.file.buffer, hlsDir);
+        const gcsFolder = `thumbnails/${hlsId}/`;
+        await uploadHLSFolderToGCS(hlsDir, gcsFolder);
+        const playlistPath = `${gcsFolder}playlist.m3u8`;
+        thumbnail_gcs_path = playlistPath;
+      } catch (error) {
+        console.error('Error processing thumbnail:', error);
+        throw error;
+      } finally {
+        await fs.rm(hlsDir, { recursive: true, force: true }).catch(e => console.error('Cleanup error:', e));
       }
     }
     const newSeries = await Series.create({
       title,
       category_id,
       thumbnail_url: thumbnail_gcs_path,
-      is_checkbox: is_checkbox === true || is_checkbox === 'true'
+      is_popular: is_popular === true || is_popular === 'true',
+      status: 'Draft'
     });
     // Generate signed URL for response if thumbnail exists
     const signedThumbnailUrl = thumbnail_gcs_path ? await getSignedUrl(thumbnail_gcs_path) : null;
@@ -102,9 +101,37 @@ export const createSeries = async (req, res) => {
       uuid: newSeries.id,
       title: newSeries.title,
       thumbnail_url: signedThumbnailUrl,
-      is_checkbox: newSeries.is_popular
+      is_popular: newSeries.is_popular,
+      status: newSeries.status
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to create series' });
+  }
+};
+
+export const updateSeriesStatus = async (req, res) => {
+  try {
+    const { id, status } = req.body;
+    if (!id || !status) {
+      return res.status(400).json({ error: 'Series id and status are required' });
+    }
+    // Optionally, validate status value
+    const allowedStatuses = ['Draft', 'Active', 'Inactive'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+    const series = await Series.findByPk(id);
+    if (!series) {
+      return res.status(404).json({ error: 'Series not found' });
+    }
+    series.status = status;
+    await series.save();
+    res.json({
+      message: 'Series status updated successfully',
+      id: series.id,
+      status: series.status
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to update series status' });
   }
 }; 
