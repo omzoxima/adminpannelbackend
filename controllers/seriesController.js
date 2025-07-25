@@ -11,12 +11,13 @@ export const getAllSeries = async (req, res) => {
   try {
     const series = await Series.findAll({
       include: [{ model: Category, attributes: ['name'] }],
-      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
+      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular','status']
     });
     // Generate fresh signed URLs for thumbnails
     const seriesWithSignedUrls = await Promise.all(series.map(async s => ({
       id: s.id,
       title: s.title,
+      status: s.status,
       is_popular: s.is_popular,
       thumbnail_url: s.thumbnail_url ? await getSignedUrl(s.thumbnail_url) : null,
       created_at: s.created_at,
