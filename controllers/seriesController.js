@@ -128,11 +128,13 @@ export const updateSeriesStatus = async (req, res) => {
       return res.status(404).json({ error: 'Series not found' });
     }
     series.status = status;
+    series.updated_at = new Date();
     await series.save();
     res.json({
       message: 'Series status updated successfully',
       id: series.id,
-      status: series.status
+      status: series.status,
+      updated_at: series.updated_at
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to update series status' });

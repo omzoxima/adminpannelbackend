@@ -296,7 +296,7 @@ export const transcodeMp4ToHls = async (req, res) => {
         language,
         videoUrl: hdTsSignedUrl,
         hdTsPath: hdSegmentFile ? hdSegmentFile.replace(`gs://${outputBucketName}/`, '') : null,
-       
+
       });
     }
     episode.subtitles = subtitles;
@@ -349,8 +349,8 @@ export const updateEpisode = async (req, res) => {
         where: {
           episode_number,
           series_id: episode.series_id,
-          id: { [Op.ne]: id }      
-          }
+          id: { [Op.ne]: id }
+        }
       });
       if (exists) {
         return res.status(400).json({ error: 'Episode number already exists in this series' });
@@ -359,8 +359,9 @@ export const updateEpisode = async (req, res) => {
     }
     if (typeof title !== 'undefined') episode.title = title;
     if (typeof description !== 'undefined') episode.description = description;
+    episode.updated_at = new Date();
     await episode.save();
-    res.json({ message: 'Episode updated successfully', id: episode.id });
+    res.json({ message: 'Episode updated successfully', id: episode.id, updated_at: episode.updated_at });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to update episode' });
   }
