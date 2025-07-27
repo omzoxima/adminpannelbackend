@@ -65,16 +65,25 @@ export async function uploadHLSFolderToGCS(localDir, gcsPath, makePublic = false
 // Generate v4 signed URL
 export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
   try {
+    const options = {
+      action: 'read',
+      expires: Date.now() + expiryMinutes * 60 * 1000,
+      version: 'v4',
+      responseType: 'application/octet-stream',
+      responseDisposition: 'inline'
+    };
+
+    // Add proper content-type headers for HLS files
+    if (gcsPath.endsWith('.m3u8')) {
+      options.responseType = 'application/x-mpegURL';
+    } else if (gcsPath.endsWith('.ts')) {
+      options.responseType = 'video/MP2T';
+    }
+
     const [url] = await storage
       .bucket(bucketName)
       .file(gcsPath)
-      .getSignedUrl({
-        action: 'read',
-        expires: Date.now() + expiryMinutes * 60 * 1000,
-        version: 'v4',
-        // For HLS streaming, it's good to include the response headers
-       
-      });
+      .getSignedUrl(options);
     return url;
   } catch (error) {
     console.error('Error generating signed URL:', error);

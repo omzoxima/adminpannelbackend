@@ -294,9 +294,10 @@ export const transcodeMp4ToHls = async (req, res) => {
       subtitles.push({
         gcsPath: hlsPlaylistGcsPath.replace(`gs://${outputBucketName}/`, ''),
         language,
-        videoUrl: hdTsSignedUrl,
+        videoUrl: signedPlaylistUrl, // Use playlist URL instead of HD TS URL
         hdTsPath: hdSegmentFile ? hdSegmentFile.replace(`gs://${outputBucketName}/`, '') : null,
-
+        hdTsSignedUrl,
+        sdTsSignedUrl,
       });
     }
     episode.subtitles = subtitles;
