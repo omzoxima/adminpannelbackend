@@ -80,9 +80,19 @@ export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
       options.responseType = 'video/MP2T';
     }
 
+    // Handle both full GCS URIs and relative paths
+    let filePath = gcsPath;
+    let targetBucket = bucketName;
+    
+    if (gcsPath.startsWith('gs://')) {
+      const pathParts = gcsPath.replace('gs://', '').split('/');
+      targetBucket = pathParts.shift();
+      filePath = pathParts.join('/');
+    }
+
     const [url] = await storage
-      .bucket(bucketName)
-      .file(gcsPath)
+      .bucket(targetBucket)
+      .file(filePath)
       .getSignedUrl(options);
     return url;
   } catch (error) {
@@ -118,29 +128,49 @@ export async function listSegmentFilesForTranscode(gcsFolder) {
     throw new Error('Invalid GCS folder format. Must start with gs://');
   }
   const pathParts = gcsFolder.replace('gs://', '').split('/');
-  const bucketName = pathParts.shift(); // Extracts 'bucket-name'
+  const bucketNameFromUri = pathParts.shift(); // Extracts 'bucket-name'
   const prefix = pathParts.join('/');   // Extracts 'folder/'
 
-  console.log(`[listSegmentFiles] Querying bucket: ${bucketName}, prefix: ${prefix}`);
+  console.log(`[listSegmentFilesForTranscode] Querying bucket: ${bucketNameFromUri}, prefix: ${prefix}`);
 
   // Get files using the corrected prefix
-  const [files] = await storage.bucket(bucketName).getFiles({ prefix });
-  console.log(`[listSegmentFiles] Found ${files.length} files in the folder.`);
+  const [files] = await storage.bucket(bucketNameFromUri).getFiles({ prefix });
+  console.log(`[listSegmentFilesForTranscode] Found ${files.length} files in the folder.`);
 
   // Return the full gs:// URI for each file, which is needed for signing
   return files
     .filter(f => f.name.endsWith('.ts')) // Ensure we only get segment files
-    .map(f => `gs://${bucketName}/${f.name}`);
+    .map(f => `gs://${bucketNameFromUri}/${f.name}`);
 }
 // Download a file from GCS
 export async function downloadFromGCS(gcsPath) {
-  const [contents] = await storage.bucket(bucketName).file(gcsPath).download();
+  // Handle both full GCS URIs and relative paths
+  let filePath = gcsPath;
+  let targetBucket = bucketName;
+  
+  if (gcsPath.startsWith('gs://')) {
+    const pathParts = gcsPath.replace('gs://', '').split('/');
+    targetBucket = pathParts.shift();
+    filePath = pathParts.join('/');
+  }
+
+  const [contents] = await storage.bucket(targetBucket).file(filePath).download();
   return contents.toString();
 }
  
 // Upload a file to GCS (overwrite)
 export async function uploadTextToGCS(gcsPath, text, contentType = 'application/x-mpegURL') {
-  await storage.bucket(bucketName).file(gcsPath).save(text, {
+  // Handle both full GCS URIs and relative paths
+  let filePath = gcsPath;
+  let targetBucket = bucketName;
+  
+  if (gcsPath.startsWith('gs://')) {
+    const pathParts = gcsPath.replace('gs://', '').split('/');
+    targetBucket = pathParts.shift();
+    filePath = pathParts.join('/');
+  }
+
+  await storage.bucket(targetBucket).file(filePath).save(text, {
     metadata: { contentType, cacheControl: 'public, max-age=31536000' },
     resumable: false
   });
