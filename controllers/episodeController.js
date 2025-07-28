@@ -58,33 +58,8 @@ export const getEpisodeHlsUrl = async (req, res) => {
       segmentSignedUrls[seg] = await getSignedUrl(seg, 3600);
     }));
     let playlistText = await downloadFromGCS(subtitle.gcsPath);
-    
-    // Check if this is a master playlist (contains sub-playlists)
-    if (playlistText.includes('#EXT-X-STREAM-INF')) {
-      // This is a master playlist, we need to process sub-playlists
-      const subPlaylistMatches = playlistText.match(/^([^#].*\.m3u8)$/gm);
-      if (subPlaylistMatches) {
-        for (const subPlaylist of subPlaylistMatches) {
-          const subPlaylistPath = `${gcsFolder}${subPlaylist}`;
-          
-          try {
-            let subPlaylistText = await downloadFromGCS(subPlaylistPath);
-            // Replace .ts files with signed URLs in sub-playlist
-            subPlaylistText = subPlaylistText.replace(/^(.*\.ts)$/gm, (match) => {
-              const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
-              return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
-            });
-            await uploadTextToGCS(subPlaylistPath, subPlaylistText, 'application/x-mpegURL');
-          } catch (error) {
-            console.warn(`Failed to process sub-playlist ${subPlaylist}:`, error);
-          }
-        }
-      }
-    } else {
-      // This is a direct playlist with .ts files
-      playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
-      await uploadTextToGCS(subtitle.gcsPath, playlistText, 'application/x-mpegURL');
-    }
+    playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
+    await uploadTextToGCS(subtitle.gcsPath, playlistText, 'application/x-mpegURL');
     const signedUrl = await getSignedUrl(subtitle.gcsPath, 3600);
     return res.json({ signedUrl });
   } catch (error) {
@@ -133,33 +108,8 @@ export const uploadMultilingual = async (req, res) => {
           }));
           const playlistPath = `${gcsFolder}playlist.m3u8`;
           let playlistText = await downloadFromGCS(playlistPath);
-          
-          // Check if this is a master playlist (contains sub-playlists)
-          if (playlistText.includes('#EXT-X-STREAM-INF')) {
-            // This is a master playlist, we need to process sub-playlists
-            const subPlaylistMatches = playlistText.match(/^([^#].*\.m3u8)$/gm);
-            if (subPlaylistMatches) {
-              for (const subPlaylist of subPlaylistMatches) {
-                const subPlaylistPath = `${gcsFolder}${subPlaylist}`;
-                
-                try {
-                  let subPlaylistText = await downloadFromGCS(subPlaylistPath);
-                  // Replace .ts files with signed URLs in sub-playlist
-                  subPlaylistText = subPlaylistText.replace(/^(.*\.ts)$/gm, (match) => {
-                    const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
-                    return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
-                  });
-                  await uploadTextToGCS(subPlaylistPath, subPlaylistText, 'application/x-mpegURL');
-                } catch (error) {
-                  console.warn(`Failed to process sub-playlist ${subPlaylist}:`, error);
-                }
-              }
-            }
-          } else {
-            // This is a direct playlist with .ts files
-            playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
-            await uploadTextToGCS(playlistPath, playlistText, 'application/x-mpegURL');
-          }
+          playlistText = playlistText.replace(/^(segment_\d+\.ts)$/gm, (match) => segmentSignedUrls[`${gcsFolder}${match}`] || match);
+          await uploadTextToGCS(playlistPath, playlistText, 'application/x-mpegURL');
           const signedUrl = await getSignedUrl(playlistPath);
           return {
             language: lang,
@@ -308,47 +258,26 @@ export const transcodeMp4ToHls = async (req, res) => {
       }
       // Only keep HD .ts file for storage
       const hdSegmentFile = segmentFiles.find(f => /\/hd\d+\.ts$/.test(f));
-      // Generate signed URLs for segments using full GCS URIs
+      // Convert full gs://... URIs to object paths for signing
+      const segmentObjectPaths = segmentFiles.map(seg => seg.replace(`gs://${outputBucketName}/`, ''));
+      // Generate signed URLs for segments
       const segmentSignedUrls = {};
       await Promise.all(
-        segmentFiles.map(async (seg) => {
-          segmentSignedUrls[seg] = await getSignedUrl(seg, 60 * 24 * 7);
+        segmentObjectPaths.map(async (seg, idx) => {
+          segmentSignedUrls[segmentFiles[idx]] = await getSignedUrl(seg, 60 * 24 * 7);
         })
       );
-      // Update playlist with signed segment URLs using full GCS URI
-      let playlistText = await downloadFromGCS(hlsPlaylistGcsPath);
-      
-      // Check if this is a master playlist (contains sub-playlists)
-      if (playlistText.includes('#EXT-X-STREAM-INF')) {
-        // This is a master playlist, we need to process sub-playlists
-        const subPlaylistMatches = playlistText.match(/^([^#].*\.m3u8)$/gm);
-        if (subPlaylistMatches) {
-                      for (const subPlaylist of subPlaylistMatches) {
-              const subPlaylistPath = `${gcsFolder}${subPlaylist}`;
-              
-              try {
-                let subPlaylistText = await downloadFromGCS(subPlaylistPath);
-              // Replace .ts files with signed URLs in sub-playlist
-              subPlaylistText = subPlaylistText.replace(/^(.*\.ts)$/gm, (match) => {
-                const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
-                return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
-                              });
-                await uploadTextToGCS(subPlaylistPath, subPlaylistText, 'application/x-mpegURL');
-            } catch (error) {
-              console.warn(`Failed to process sub-playlist ${subPlaylist}:`, error);
-            }
-          }
-        }
-              } else {
-          // This is a direct playlist with .ts files
-          playlistText = playlistText.replace(/^(.*\.ts)$/gm, (match) => {
-            const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
-            return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
-          });
-          await uploadTextToGCS(hlsPlaylistGcsPath, playlistText, 'application/x-mpegURL');
-        }
-        // Generate signed URL for playlist
-        const signedPlaylistUrl = await getSignedUrl(hlsPlaylistGcsPath, 60 * 24 * 7);
+      // For playlist, extract object path
+      const playlistObjectPath = hlsPlaylistGcsPath.replace(`gs://${outputBucketName}/`, '');
+      // Update playlist with signed segment URLs
+      let playlistText = await downloadFromGCS(playlistObjectPath);
+      playlistText = playlistText.replace(/^(.*\.ts)$/gm, (match) => {
+        const fullPath = segmentFiles.find(f => f.endsWith('/' + match));
+        return fullPath && segmentSignedUrls[fullPath] ? segmentSignedUrls[fullPath] : match;
+      });
+      await uploadTextToGCS(playlistObjectPath, playlistText, 'application/x-mpegURL');
+      // Generate signed URL for playlist
+      const signedPlaylistUrl = await getSignedUrl(playlistObjectPath, 60 * 24 * 7);
       // Generate signed URL for HD and SD .ts files if available
       let hdTsSignedUrl = null;
       let sdTsSignedUrl = null;
@@ -365,10 +294,9 @@ export const transcodeMp4ToHls = async (req, res) => {
       subtitles.push({
         gcsPath: hlsPlaylistGcsPath.replace(`gs://${outputBucketName}/`, ''),
         language,
-        videoUrl: signedPlaylistUrl, // Use playlist URL instead of HD TS URL
+        videoUrl: hdTsSignedUrl,
         hdTsPath: hdSegmentFile ? hdSegmentFile.replace(`gs://${outputBucketName}/`, '') : null,
-        hdTsSignedUrl,
-        sdTsSignedUrl,
+
       });
     }
     episode.subtitles = subtitles;
