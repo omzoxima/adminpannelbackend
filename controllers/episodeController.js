@@ -283,7 +283,6 @@ export const transcodeMp4ToHls = async (req, res) => {
         gcsPath: playlistPath,
         language,
         videoUrl: hdTsSignedUrl,
-        playlistUrl: signedPlaylistUrl,
         hdTsPath: firstSegmentPath,
       });
     }
