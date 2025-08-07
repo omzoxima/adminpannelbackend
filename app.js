@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const app = express();
 const db = require('./config/db');
 const adminRoutes = require('./routes/admin');
@@ -11,10 +13,27 @@ const userRoutes = require('./routes/user');
 const bodyParser = require('body-parser');
 const { sequelize } = require('./models/index.js');
 const { authenticateToken } = require('./utils/jwt');
+const { 
+  securityHeadersMiddleware, 
+  rateLimitMiddleware, 
+  deviceValidationMiddleware 
+} = require('./utils/security');
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Security middleware
+app.use(helmet());
+app.use(securityHeadersMiddleware);
+app.use(rateLimitMiddleware);
+
+// CORS configuration
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-ID', 'X-Platform']
+}));
+
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // JWT middleware for all /api routes except /api/admin/login
 app.use((req, res, next) => {
