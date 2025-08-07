@@ -7,5 +7,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500
 router.get('/', seriesController.getAllSeries);
 router.get('/:id', seriesController.getSeriesById);
 router.post('/create', upload.single('thumbnail'), seriesController.createSeries);
+router.post('/update-status', seriesController.updateSeriesStatus);
 
 module.exports = router; 

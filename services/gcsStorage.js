@@ -82,12 +82,47 @@ export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
   }
 }
  
-// List all .ts segment files in a GCS folder
-export async function listSegmentFiles(gcsFolder) {
-  const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
-  return files.filter(f => f.name.endsWith('.ts')).map(f => f.name);
+// Generate v4 signed URL for upload
+export async function getUploadSignedUrl(folder, extension, expiryMinutes = 15) {
+  const fileName = `${folder}/${uuidv4()}${extension.startsWith('.') ? extension : '.' + extension}`;
+  const file = storage.bucket(bucketName).file(fileName);
+  const [url] = await file.getSignedUrl({
+    version: 'v4',
+    action: 'write',
+    expires: Date.now() + expiryMinutes * 60 * 1000,
+   
+  });
+  return { url, gcsPath: fileName };
 }
  
+// List all .ts segment files in a GCS folder
+export async function listSegmentFiles(gcsFolder) {
+  console.log(`[listSegmentFiles] Querying bucket: ${bucketName}, prefix: ${gcsFolder}`);
+const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
+console.log(`[listSegmentFiles] Found ${files.length} files:`, files.map(f => f.name));
+ // const [files] = await storage.bucket(bucketName).getFiles({ prefix: gcsFolder });
+  return files.filter(f => f.name.endsWith('.ts')).map(f => f.name);
+}
+export async function listSegmentFilesForTranscode(gcsFolder) {
+  // Correctly parse the bucket and prefix from the full URI
+  if (!gcsFolder.startsWith('gs://')) {
+    throw new Error('Invalid GCS folder format. Must start with gs://');
+  }
+  const pathParts = gcsFolder.replace('gs://', '').split('/');
+  const bucketName = pathParts.shift(); // Extracts 'bucket-name'
+  const prefix = pathParts.join('/');   // Extracts 'folder/'
+
+  console.log(`[listSegmentFiles] Querying bucket: ${bucketName}, prefix: ${prefix}`);
+
+  // Get files using the corrected prefix
+  const [files] = await storage.bucket(bucketName).getFiles({ prefix });
+  console.log(`[listSegmentFiles] Found ${files.length} files in the folder.`);
+
+  // Return the full gs:// URI for each file, which is needed for signing
+  return files
+    .filter(f => f.name.endsWith('.ts')) // Ensure we only get segment files
+    .map(f => `gs://${bucketName}/${f.name}`);
+}
 // Download a file from GCS
 export async function downloadFromGCS(gcsPath) {
   const [contents] = await storage.bucket(bucketName).file(gcsPath).download();

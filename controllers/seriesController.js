@@ -11,12 +11,13 @@ export const getAllSeries = async (req, res) => {
   try {
     const series = await Series.findAll({
       include: [{ model: Category, attributes: ['name'] }],
-      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
+      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular','status']
     });
     // Generate fresh signed URLs for thumbnails
     const seriesWithSignedUrls = await Promise.all(series.map(async s => ({
       id: s.id,
       title: s.title,
+      status: s.status,
       is_popular: s.is_popular,
       thumbnail_url: s.thumbnail_url ? await getSignedUrl(s.thumbnail_url) : null,
       created_at: s.created_at,
@@ -34,9 +35,9 @@ export const getSeriesById = async (req, res) => {
     const series = await Series.findByPk(req.params.id, {
       include: [
         { model: Category, attributes: ['name'] },
-        { model: Episode, attributes: ['title', 'episode_number', 'description'], order: [['episode_number', 'ASC']] }
+        { model: Episode, attributes: ['id','title', 'episode_number', 'description'], order: [['episode_number', 'ASC']] }
       ],
-      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular']
+      attributes: ['id', 'title', 'thumbnail_url', 'created_at', 'updated_at', 'is_popular','status']
     });
     if (!series) return res.status(404).json({ error: 'Series not found' });
     // Generate fresh signed URL for thumbnail
@@ -48,8 +49,10 @@ export const getSeriesById = async (req, res) => {
       created_at: series.created_at,
       updated_at: series.updated_at,
       is_popular: series.is_popular,
+      status: series.status,
       category_name: series.Category ? series.Category.name : null,
       episodes: series.Episodes ? series.Episodes.map(e => ({
+        id: e.id,
         title: e.title,
         episode_number: e.episode_number,
         description: e.description
@@ -62,50 +65,78 @@ export const getSeriesById = async (req, res) => {
 
 export const createSeries = async (req, res) => {
   try {
-    const { title, category_id, is_checkbox } = req.body;
-    if (!title || !category_id) {
-      return res.status(400).json({ error: 'Title and category_id are required' });
+    const { title, category_id, is_popular } = req.body;
+    if (!title || !category_id || typeof is_popular === 'undefined' || !req.file) {
+      return res.status(400).json({ error: 'Title, category_id, is_popular, and file are required' });
     }
-    let thumbnail_url = null;
-    if (req.file) {
-      console.log('check');
-      const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-      if (imageTypes.includes(req.file.mimetype)) {
-        console.log('image type');
-        const gcsPath = await uploadToGCS(req.file, 'thumbnails');
-        thumbnail_url = await getSignedUrl(gcsPath);
-      } else {
-        const hlsId = uuidv4();
-        const hlsDir = path.join('/tmp', hlsId);
-        await fs.mkdir(hlsDir, { recursive: true });
-        try {
-          await convertToHLS(req.file.buffer, hlsDir);
-          const gcsFolder = `thumbnails/${hlsId}/`;
-          await uploadHLSFolderToGCS(hlsDir, gcsFolder);
-          const playlistPath = `${gcsFolder}playlist.m3u8`;
-          const signedUrl = await getSignedUrl(playlistPath);
-          thumbnail_url = signedUrl;
-        } catch (error) {
-          console.error('Error processing thumbnail:', error);
-          throw error;
-        } finally {
-          await fs.rm(hlsDir, { recursive: true, force: true }).catch(e => console.error('Cleanup error:', e));
-        }
+    let thumbnail_gcs_path = null;
+    const imageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (imageTypes.includes(req.file.mimetype)) {
+      // For images, upload and store the GCS path
+      thumbnail_gcs_path = await uploadToGCS(req.file, 'thumbnails');
+    } else {
+      const hlsId = uuidv4();
+      const hlsDir = path.join('/tmp', hlsId);
+      await fs.mkdir(hlsDir, { recursive: true });
+      try {
+        await convertToHLS(req.file.buffer, hlsDir);
+        const gcsFolder = `thumbnails/${hlsId}/`;
+        await uploadHLSFolderToGCS(hlsDir, gcsFolder);
+        const playlistPath = `${gcsFolder}playlist.m3u8`;
+        thumbnail_gcs_path = playlistPath;
+      } catch (error) {
+        console.error('Error processing thumbnail:', error);
+        throw error;
+      } finally {
+        await fs.rm(hlsDir, { recursive: true, force: true }).catch(e => console.error('Cleanup error:', e));
       }
     }
     const newSeries = await Series.create({
       title,
       category_id,
-      thumbnail_url,
-      is_checkbox: is_checkbox === true || is_checkbox === 'true'
+      thumbnail_url: thumbnail_gcs_path,
+      is_popular: is_popular === true || is_popular === 'true',
+      status: 'Draft'
     });
+    // Generate signed URL for response if thumbnail exists
+    const signedThumbnailUrl = thumbnail_gcs_path ? await getSignedUrl(thumbnail_gcs_path) : null;
     res.status(201).json({
       uuid: newSeries.id,
       title: newSeries.title,
-      thumbnail_url: thumbnail_url,
-      is_checkbox: newSeries.is_popular
+      thumbnail_url: signedThumbnailUrl,
+      is_popular: newSeries.is_popular,
+      status: newSeries.status
     });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to create series' });
+  }
+};
+
+export const updateSeriesStatus = async (req, res) => {
+  try {
+    const { id, status } = req.body;
+    if (!id || !status) {
+      return res.status(400).json({ error: 'Series id and status are required' });
+    }
+    // Optionally, validate status value
+    const allowedStatuses = ['Draft', 'Active', 'Inactive'];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+    const series = await Series.findByPk(id);
+    if (!series) {
+      return res.status(404).json({ error: 'Series not found' });
+    }
+    series.status = status;
+    series.updated_at = new Date();
+    await series.save();
+    res.json({
+      message: 'Series status updated successfully',
+      id: series.id,
+      status: series.status,
+      updated_at: series.updated_at
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to update series status' });
   }
 }; 
