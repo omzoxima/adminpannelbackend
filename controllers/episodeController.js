@@ -87,34 +87,8 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       const jobConfig = {
         elementaryStreams: [
-          // SD quality - auto-scale to maintain aspect ratio
-          { 
-            key: 'video-sd', 
-            videoStream: { 
-              h264: { 
-                // Only specify height, width will be calculated to maintain aspect ratio
-                heightPixels: 360,
-                bitrateBps: 800000, 
-                frameRate: 30,
-                allowOpenGop: true,
-                gopFrameCount: 30
-              } 
-            } 
-          },
-          // HD quality - auto-scale to maintain aspect ratio  
-          { 
-            key: 'video-hd', 
-            videoStream: { 
-              h264: { 
-                // Only specify height, width will be calculated to maintain aspect ratio
-                heightPixels: 720,
-                bitrateBps: 2500000, 
-                frameRate: 30,
-                allowOpenGop: true,
-                gopFrameCount: 30
-              } 
-            } 
-          },
+          { key: 'video-sd', videoStream: { h264: { heightPixels: 360, bitrateBps: 800000, frameRate: 30, allowOpenGop: true, gopFrameCount: 30 } } },
+          { key: 'video-hd', videoStream: { h264: { heightPixels: 720, bitrateBps: 2500000, frameRate: 30, allowOpenGop: true, gopFrameCount: 30 } } },
           { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 } },
         ],
         muxStreams: [
@@ -126,19 +100,16 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       const request = {
         parent: `projects/${projectId}/locations/${location}`,
-        job: { 
-          inputUri: gcsFilePath, 
-          outputUri, 
-          config: jobConfig
-        },
+        job: { inputUri: gcsFilePath, outputUri, config: jobConfig },
       };
 
       const [operation] = await transcoderClient.createJob(request);
       const jobName = operation.name;
+
       const timeout = 10 * 60 * 1000;
       const start = Date.now();
-      let jobState = 'PENDING';
       let jobResult;
+      let jobState = 'PENDING';
 
       while (Date.now() - start < timeout) {
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -160,15 +131,21 @@ export const transcodeMp4ToHls = async (req, res) => {
       const hdSegmentFiles = segmentFiles.filter(f => f.includes('/hd') && f.endsWith('.ts'));
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
 
+      // Generate signed URLs for TS segments with correct headers
       const segmentSignedUrls = {};
       await Promise.all(hdSegmentFiles.map(async (segPath) => {
         const relativePath = segPath.replace(`gs://${outputBucketName}/`, '');
-        segmentSignedUrls[relativePath] = await getSignedUrl(relativePath, 60 * 24 * 7);
+        segmentSignedUrls[relativePath] = await getSignedUrl(relativePath, 60 * 24 * 7, {
+          responseType: 'video/MP2T',
+          cacheControl: 'public,max-age=31536000'
+        });
       }));
 
+      // Download original playlist
       let playlistText = await downloadFromGCS(playlistPath);
-      const lines = playlistText.split('\n');
-      const newPlaylist = lines.map(line => {
+
+      // Replace TS segment references with signed URLs
+      const newPlaylist = playlistText.split('\n').map(line => {
         if (line.endsWith('.ts')) {
           const filename = line.trim();
           return segmentSignedUrls[`${outputFolder}${filename}`] || '';
@@ -176,15 +153,28 @@ export const transcodeMp4ToHls = async (req, res) => {
         return line;
       }).filter(Boolean).join('\n');
 
-      await uploadTextToGCS(playlistPath, newPlaylist);
-      const signedPlaylistUrl = await getSignedUrl(playlistPath, 60 * 24 * 7);
+      // Upload updated playlist with correct MIME type & short cache
+      await uploadTextToGCS(playlistPath, newPlaylist, {
+        contentType: 'application/x-mpegURL',
+        cacheControl: 'public,max-age=300'
+      });
+
+      const signedPlaylistUrl = await getSignedUrl(playlistPath, 60 * 24 * 7, {
+        responseType: 'application/x-mpegURL',
+        cacheControl: 'public,max-age=300'
+      });
+
+      // First TS segment signed URL for testing
       const firstSegmentPath = hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
-      const hdTsSignedUrl = await getSignedUrl(firstSegmentPath, 60 * 24 * 7);
+      const hdTsSignedUrl = await getSignedUrl(firstSegmentPath, 60 * 24 * 7, {
+        responseType: 'video/MP2T',
+        cacheControl: 'public,max-age=31536000'
+      });
 
       subtitles.push({
         gcsPath: playlistPath,
         language,
-        videoUrl: hdTsSignedUrl,
+        videoUrl: signedPlaylistUrl,
         hdTsPath: firstSegmentPath,
       });
     }
@@ -204,6 +194,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     res.status(500).json({ error: error.message || 'Transcoding failed' });
   }
 };
+
 
 
 

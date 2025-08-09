@@ -72,43 +72,35 @@ export async function uploadHLSFolderToGCS(localDir, gcsPath, makePublic = false
 }
  
 // Generate v4 signed URL
-export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
-  try {
-    // Determine content type based on file extension for proper MIME type handling
-    const fileExtension = path.extname(gcsPath).toLowerCase();
-    let contentType = 'application/octet-stream';
-    
-    if (fileExtension === '.mp4') {
-      contentType = 'video/mp4';
-    } else if (fileExtension === '.m3u8') {
-      contentType = 'application/x-mpegURL';
-    } else if (fileExtension === '.ts') {
-      contentType = 'video/MP2T';
-    } else if (fileExtension === '.webm') {
-      contentType = 'video/webm';
-    } else if (fileExtension === '.avi') {
-      contentType = 'video/x-msvideo';
-    }
-    
-    const [url] = await storage
-      .bucket(bucketName)
-      .file(gcsPath)
-      .getSignedUrl({
-        action: 'read',
-        expires: Date.now() + expiryMinutes * 60 * 1000,
-        version: 'v4',
-        responseHeaders: {
-          'Content-Type': contentType,
-          'Content-Disposition': 'inline',
-          'Accept-Ranges': 'bytes'
-        }
-      });
-    return url;
-  } catch (error) {
-    console.error('Error generating signed URL:', error);
-    throw new Error('Failed to generate signed URL');
+export async function getSignedUrl(filePath, expiryMinutes = 10) {
+  const file = storage.bucket(outputBucketName).file(filePath);
+
+  let responseType;
+  let cacheControl;
+
+  // Detect file type
+  if (filePath.endsWith('.m3u8')) {
+    responseType = 'application/x-mpegURL';
+    cacheControl = 'public,max-age=60'; // let clients cache for 1 min
+  } else if (filePath.endsWith('.ts')) {
+    responseType = 'video/MP2T';
+    cacheControl = 'public,max-age=31536000'; // segments can be cached longer
+  } else {
+    cacheControl = 'public,max-age=86400';
   }
+
+  const [url] = await file.getSignedUrl({
+    version: 'v4',
+    action: 'read',
+    expires: Date.now() + expiryMinutes * 60 * 1000,
+    responseType,
+    responseDisposition: 'inline',
+    responseCacheControl: cacheControl,
+  });
+
+  return url;
 }
+
  
 // Generate v4 signed URL for upload
 export async function getUploadSignedUrl(folder, extension, expiryMinutes = 15) {
