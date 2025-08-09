@@ -11,9 +11,18 @@ export async function uploadToGCS(file, folder, makePublic = false) {
   const fileName = `${folder}/${uuidv4()}${path.extname(file.originalname)}`;
   const fileObj = storage.bucket(bucketName).file(fileName);
   
+  // Determine proper MIME type for iOS compatibility
+  let contentType = file.mimetype;
+  const fileExtension = path.extname(file.originalname).toLowerCase();
+  
+  // Ensure MP4 files have the correct MIME type for iOS
+  if (fileExtension === '.mp4') {
+    contentType = 'video/mp4';
+  }
+  
   await fileObj.save(file.buffer, {
     metadata: {
-      contentType: file.mimetype,
+      contentType,
       // Add cache control for better CDN performance
       cacheControl: 'public, max-age=31536000'
     }
@@ -65,6 +74,22 @@ export async function uploadHLSFolderToGCS(localDir, gcsPath, makePublic = false
 // Generate v4 signed URL
 export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
   try {
+    // Determine content type based on file extension for proper MIME type handling
+    const fileExtension = path.extname(gcsPath).toLowerCase();
+    let contentType = 'application/octet-stream';
+    
+    if (fileExtension === '.mp4') {
+      contentType = 'video/mp4';
+    } else if (fileExtension === '.m3u8') {
+      contentType = 'application/x-mpegURL';
+    } else if (fileExtension === '.ts') {
+      contentType = 'video/MP2T';
+    } else if (fileExtension === '.webm') {
+      contentType = 'video/webm';
+    } else if (fileExtension === '.avi') {
+      contentType = 'video/x-msvideo';
+    }
+    
     const [url] = await storage
       .bucket(bucketName)
       .file(gcsPath)
@@ -72,8 +97,11 @@ export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
         action: 'read',
         expires: Date.now() + expiryMinutes * 60 * 1000,
         version: 'v4',
-        // For HLS streaming, it's good to include the response headers
-       
+        responseHeaders: {
+          'Content-Type': contentType,
+          'Content-Disposition': 'inline',
+          'Accept-Ranges': 'bytes'
+        }
       });
     return url;
   } catch (error) {
