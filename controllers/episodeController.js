@@ -3,8 +3,7 @@ import { listSegmentFiles, getSignedUrl, downloadTextFromGCS, uploadTextToGCS, u
 import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
 import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
-// --- MODIFIED FUNCTION ---
-import fetch from 'node-fetch';
+
 import { Op } from 'sequelize';
 
 const location = 'asia-south1'; // Set your region
@@ -53,8 +52,6 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 
 
 
-
-
 async function verifyUrlAccessible(url) {
   try {
     const resp = await fetch(url, { method: 'HEAD' });
@@ -68,8 +65,11 @@ export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
   const { series_id, episode_number, title, episode_description, videos } = req.body;
 
-  if (!series_id || !episode_number || !title || !videos || !Array.isArray(videos)) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!Array.isArray(videos) || videos.length === 0) {
+    return res.status(400).json({ error: 'Videos array is required' });
+  }
+  if (!series_id || !episode_number) {
+    return res.status(400).json({ error: 'series_id and episode_number are required' });
   }
 
   let episode;
@@ -80,23 +80,25 @@ export const transcodeMp4ToHls = async (req, res) => {
     if (!series) return res.status(400).json({ error: 'Series not found' });
 
     episode = await Episode.create({
-      series_id,
+      title: title || `Episode ${episode_number}`,
       episode_number,
-      title,
-      episode_description,
-      status: 'processing'
+      series_id,
+      description: episode_description || null,
+      reward_cost_points: 0,
+      subtitles: [],
     });
 
     const subtitles = [];
 
     for (const video of videos) {
-      if (!isValidGcsUri(video.gcsPath)) {
-        throw new Error(`Invalid GCS URI: ${video.gcsPath}`);
-      }
+      const { gcsFilePath, language } = video;
+      if (!isValidGcsUri(gcsFilePath)) throw new Error(`Invalid GCS path for ${language}`);
 
       const outputFolder = `hls_output/${uuidv4()}/`;
       const outputUri = `gs://${outputBucketName}/${outputFolder}`;
       gcsFoldersToCleanup.push(outputUri);
+
+
 
       const projectId = await transcoderClient.getProjectId();
 
@@ -128,31 +130,32 @@ export const transcodeMp4ToHls = async (req, res) => {
       };
 
       const request = {
-        parent: transcoderClient.locationPath(projectId, location),
-        job: {
-          inputUri: video.gcsPath,
-          outputUri,
-          config: jobConfig
-        }
+
+        parent: `projects/${projectId}/locations/${location}`,
+        job: { inputUri: gcsFilePath, outputUri, config: jobConfig },
       };
 
-      console.log(`[transcodeMp4ToHls] Starting job for ${video.gcsPath}`);
-      const [job] = await transcoderClient.createJob(request);
-      console.log(`[transcodeMp4ToHls] Job created: ${job.name}`);
+      const [operation] = await transcoderClient.createJob(request);
+      const jobName = operation.name;
 
-      let jobState;
-      do {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        const [updatedJob] = await transcoderClient.getJob({ name: job.name });
-        jobState = updatedJob.state;
-        console.log(`[transcodeMp4ToHls] Job state: ${jobState}`);
-      } while (jobState !== 'SUCCEEDED' && jobState !== 'FAILED');
+      const timeout = 10 * 60 * 1000;
+      const start = Date.now();
+      let jobResult;
+      let jobState = 'PENDING';
 
-      if (jobState === 'FAILED') {
-        throw new Error(`Transcoding job failed for ${video.gcsPath}`);
+      while (Date.now() - start < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        [jobResult] = await transcoderClient.getJob({ name: jobName });
+        jobState = jobResult.state;
+        if (['SUCCEEDED', 'FAILED'].includes(jobState)) break;
       }
 
-      console.log(`[transcodeMp4ToHls] Job completed for ${video.gcsPath}`);
+      if (jobState !== 'SUCCEEDED') {
+        throw new Error(jobState === 'FAILED'
+          ? `Transcoding failed: ${jobResult.error?.message}`
+          : 'Transcoding timeout');
+      }
+
 
       const playlistPath = `${outputFolder}playlist.m3u8`;
       const gcsFolder = `gs://${outputBucketName}/${outputFolder}`;
@@ -160,8 +163,8 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
+      let playlistText = await downloadFromGCS(playlistPath);
 
-      let playlistText = await downloadTextFromGCS(playlistPath);
 
       const tsFilesInPlaylist = playlistText
         .split('\n')
@@ -212,15 +215,15 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       subtitles.push({
         gcsPath: playlistPath,
-        signedUrl: signedPlaylistUrl,
-        language: video.language || 'en',
-        type: 'hls',
-        firstSegmentPath,
-        firstSegmentSignedUrl: await getSignedUrl(firstSegmentPath, 60 * 24 * 7)
+
+        language,
+        videoUrl: signedPlaylistUrl,
+        hdTsPath: firstSegmentPath,
       });
     }
 
-    episode.status = 'completed';
+    episode.subtitles = subtitles;
+
     await episode.save();
 
     res.json({
@@ -237,7 +240,8 @@ export const transcodeMp4ToHls = async (req, res) => {
     for (const folderUri of gcsFoldersToCleanup) {
       try {
         const folderPath = folderUri.replace(`gs://${outputBucketName}/`, '');
-        await storageClient.bucket(outputBucketName).deleteFiles({ prefix: folderPath });
+        await storage.bucket(outputBucketName).deleteFiles({ prefix: folderPath });
+
         console.log(`[cleanup] Deleted GCS folder: ${folderUri}`);
       } catch (e) {
         console.warn(`[cleanup] Failed to delete GCS folder ${folderUri}:`, e.message);
