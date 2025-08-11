@@ -11,9 +11,18 @@ export async function uploadToGCS(file, folder, makePublic = false) {
   const fileName = `${folder}/${uuidv4()}${path.extname(file.originalname)}`;
   const fileObj = storage.bucket(bucketName).file(fileName);
   
+  // Determine proper MIME type for iOS compatibility
+  let contentType = file.mimetype;
+  const fileExtension = path.extname(file.originalname).toLowerCase();
+  
+  // Ensure MP4 files have the correct MIME type for iOS
+  if (fileExtension === '.mp4') {
+    contentType = 'video/mp4';
+  }
+  
   await fileObj.save(file.buffer, {
     metadata: {
-      contentType: file.mimetype,
+      contentType,
       // Add cache control for better CDN performance
       cacheControl: 'public, max-age=31536000'
     }
@@ -63,24 +72,35 @@ export async function uploadHLSFolderToGCS(localDir, gcsPath, makePublic = false
 }
  
 // Generate v4 signed URL
-export async function getSignedUrl(gcsPath, expiryMinutes = 60) {
-  try {
-    const [url] = await storage
-      .bucket(bucketName)
-      .file(gcsPath)
-      .getSignedUrl({
-        action: 'read',
-        expires: Date.now() + expiryMinutes * 60 * 1000,
-        version: 'v4',
-        // For HLS streaming, it's good to include the response headers
-       
-      });
-    return url;
-  } catch (error) {
-    console.error('Error generating signed URL:', error);
-    throw new Error('Failed to generate signed URL');
+export async function getSignedUrl(filePath, expiryMinutes = 10) {
+  const file = storage.bucket(bucketName).file(filePath);
+
+  let responseType;
+  let cacheControl;
+
+  // Correct MIME types for iOS
+  if (filePath.endsWith('.m3u8')) {
+    responseType = 'application/vnd.apple.mpegurl';
+    cacheControl = 'public,max-age=300'; // playlist refresh every 5 min
+  } else if (filePath.endsWith('.ts')) {
+    responseType = 'video/mp2t';
+    cacheControl = 'public,max-age=31536000'; // 1 year cache for segments
+  } else {
+    cacheControl = 'public,max-age=86400';
   }
+
+  const [url] = await file.getSignedUrl({
+    version: 'v4',
+    action: 'read',
+    expires: Date.now() + expiryMinutes * 60 * 1000,
+    responseType,
+    responseDisposition: 'inline',
+    responseCacheControl: cacheControl,
+  });
+
+  return url;
 }
+
  
 // Generate v4 signed URL for upload
 export async function getUploadSignedUrl(folder, extension, expiryMinutes = 15) {
