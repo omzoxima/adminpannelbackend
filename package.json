@@ -1,6 +1,7 @@
 {
   "name": "admin-portal-backend",
   "version": "1.0.0",
+  "type": "module",
   "description": "Backend for Admin Portal (Node.js, Express, PostgreSQL, JWT)",
   "main": "app.js",
   "scripts": {
@@ -13,6 +14,7 @@
     "@google-cloud/storage": "^7.16.0",
     "@google-cloud/video-transcoder": "^4.2.0",
     "bcryptjs": "^2.4.3",
+
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.18.2",

@@ -1,14 +1,14 @@
 import models from '../models/index.js';
-import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploadHLSFolderToGCS, getUploadSignedUrl,listSegmentFilesForTranscode } from '../services/gcsStorage.js';
+import { listSegmentFiles, uploadHLSFolderToGCS, getUploadSignedUrl, listSegmentFilesForTranscode } from '../services/gcsStorage.js';
 import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
 import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Op } from 'sequelize';
 
-const location = 'asia-south1'; // Set your region
-const outputBucketName = 'run-sources-tuktuki-464514-asia-south1';
-const bucketName = 'run-sources-tuktuki-464514-asia-south1'; // Set your output bucket
+const location = process.env.GOOGLE_CLOUD_REGION || 'asia-south1';
+const outputBucketName = process.env.GCS_OUTPUT_BUCKET_NAME || 'run-sources-tuktuki-464514-asia-south1';
+const bucketName = process.env.GCS_BUCKET_NAME || 'run-sources-tuktuki-464514-asia-south1';
 const transcoderClient = new TranscoderServiceClient();
 const storageClient = new Storage();
 
@@ -52,14 +52,7 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 
 
 
-async function verifyUrlAccessible(url) {
-  try {
-    const resp = await fetch(url, { method: 'HEAD' });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
+
 
 export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
@@ -163,62 +156,14 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
-      let playlistText = await downloadFromGCS(playlistPath);
 
-
-      const tsFilesInPlaylist = playlistText
-        .split('\n')
-        .filter(line => line.trim().endsWith('.ts'))
-        .map(line => line.trim());
-
-      const segmentSignedUrls = {};
-      await Promise.all(tsFilesInPlaylist.map(async (tsFile) => {
-        const relativePath = `${outputFolder}${tsFile}`;
-        segmentSignedUrls[tsFile] = await getSignedUrl(relativePath, 60 * 6);
-      }));
-
-      const newPlaylist = playlistText.split('\n').map(line => {
-        const trimmed = line.trim();
-        if (trimmed.endsWith('.ts')) {
-          return segmentSignedUrls[trimmed] || trimmed;
-        }
-        return line;
-      }).join('\n');
-
-      await uploadTextToGCS(playlistPath, newPlaylist, {
-        contentType: 'application/vnd.apple.mpegurl',
-        cacheControl: 'public,max-age=300'
-      });
-
-      const signedPlaylistUrl = await getSignedUrl(playlistPath, 60 * 6);
-
-      // ===== Preflight Verification =====
-      console.log(`[verify] Checking playlist: ${signedPlaylistUrl}`);
-      if (!(await verifyUrlAccessible(signedPlaylistUrl))) {
-        throw new Error(`Playlist not accessible: ${signedPlaylistUrl}`);
-      }
-
-      const playlistFetched = await (await fetch(signedPlaylistUrl)).text();
-      const tsUrls = playlistFetched
-        .split('\n')
-        .filter(line => line.trim().startsWith('http') && line.includes('.ts'));
-
-      console.log(`[verify] Found ${tsUrls.length} TS segments to check.`);
-      for (const tsUrl of tsUrls) {
-        if (!(await verifyUrlAccessible(tsUrl))) {
-          throw new Error(`TS segment not accessible: ${tsUrl}`);
-        }
-      }
-      console.log('[verify] All playlist + segments OK.');
-
+      // Store raw GCS paths for future CDN use
       const firstSegmentPath = hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
 
       subtitles.push({
         gcsPath: playlistPath,
-
         language,
-        videoUrl: signedPlaylistUrl,
-        hdTsPath: firstSegmentPath,
+        hdTsPath: firstSegmentPath
       });
     }
 
@@ -227,7 +172,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     await episode.save();
 
     res.json({
-      message: 'HLS Transcoding successful (HD only, preflight verified)',
+      message: 'HLS Transcoding successful - Files stored for future CDN access',
       episodeId: episode.id,
       subtitles,
     });
@@ -272,6 +217,8 @@ export const deleteEpisode = async (req, res) => {
     res.status(500).json({ error: error.message || 'Failed to delete episode' });
   }
 };
+
+
 
 export const updateEpisode = async (req, res) => {
   try {

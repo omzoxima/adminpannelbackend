@@ -1,7 +1,7 @@
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const path = require('path');
-const fs = require('fs/promises');
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import path from 'path';
+import fs from 'fs/promises';
 
 // Configure FFmpeg path
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -51,4 +51,4 @@ async function convertToHLS(videoBuffer, outputDir) {
   });
 }
 
-module.exports = convertToHLS; 
+export default convertToHLS; 
