@@ -98,6 +98,8 @@ export const transcodeMp4ToHls = async (req, res) => {
       const outputUri = `gs://${outputBucketName}/${outputFolder}`;
       gcsFoldersToCleanup.push(outputUri);
 
+
+
       const projectId = await transcoderClient.getProjectId();
 
       const jobConfig = {
@@ -128,6 +130,7 @@ export const transcodeMp4ToHls = async (req, res) => {
       };
 
       const request = {
+
         parent: `projects/${projectId}/locations/${location}`,
         job: { inputUri: gcsFilePath, outputUri, config: jobConfig },
       };
@@ -153,14 +156,15 @@ export const transcodeMp4ToHls = async (req, res) => {
           : 'Transcoding timeout');
       }
 
+
       const playlistPath = `${outputFolder}playlist.m3u8`;
       const gcsFolder = `gs://${outputBucketName}/${outputFolder}`;
       const segmentFiles = await listSegmentFilesForTranscode(gcsFolder);
 
       const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
-
       let playlistText = await downloadFromGCS(playlistPath);
+
 
       const tsFilesInPlaylist = playlistText
         .split('\n')
@@ -211,6 +215,7 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       subtitles.push({
         gcsPath: playlistPath,
+
         language,
         videoUrl: signedPlaylistUrl,
         hdTsPath: firstSegmentPath,
@@ -218,6 +223,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     }
 
     episode.subtitles = subtitles;
+
     await episode.save();
 
     res.json({
@@ -235,6 +241,7 @@ export const transcodeMp4ToHls = async (req, res) => {
       try {
         const folderPath = folderUri.replace(`gs://${outputBucketName}/`, '');
         await storage.bucket(outputBucketName).deleteFiles({ prefix: folderPath });
+
         console.log(`[cleanup] Deleted GCS folder: ${folderUri}`);
       } catch (e) {
         console.warn(`[cleanup] Failed to delete GCS folder ${folderUri}:`, e.message);
