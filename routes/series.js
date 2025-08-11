@@ -1,12 +1,13 @@
-const express = require('express');
+import express from 'express';
+import { getAllSeries, getSeriesById, createSeries, updateSeriesStatus } from '../controllers/seriesController.js';
+import multer from 'multer';
+
 const router = express.Router();
-const seriesController = require('../controllers/seriesController');
-const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
-router.get('/', seriesController.getAllSeries);
-router.get('/:id', seriesController.getSeriesById);
-router.post('/create', upload.single('thumbnail'), seriesController.createSeries);
-router.post('/update-status', seriesController.updateSeriesStatus);
+router.get('/', getAllSeries);
+router.get('/:id', getSeriesById);
+router.post('/create', upload.single('thumbnail'), createSeries);
+router.post('/update-status', updateSeriesStatus);
 
-module.exports = router; 
+export default router; 

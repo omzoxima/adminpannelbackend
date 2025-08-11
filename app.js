@@ -1,18 +1,21 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import bodyParser from 'body-parser';
+
+import adminRoutes from './routes/admin.js';
+import seriesRoutes from './routes/series.js';
+import categoryRoutes from './routes/category.js';
+import episodeRoutes from './routes/episode.js';
+import userRoutes from './routes/user.js';
+
+import { sequelize } from './models/index.js';
+import { authenticateToken } from './utils/jwt.js';
+
 const app = express();
-const db = require('./config/db');
-const adminRoutes = require('./routes/admin');
-const seriesRoutes = require('./routes/series');
-const categoryRoutes = require('./routes/category');
-const episodeRoutes = require('./routes/episode');
-const userRoutes = require('./routes/user');
-const bodyParser = require('body-parser');
-const { sequelize } = require('./models/index.js');
-const { authenticateToken } = require('./utils/jwt');
 
 app.use(cors());
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -34,6 +37,8 @@ app.use('/api/series', seriesRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/episodes', episodeRoutes);
 app.use('/api/users', userRoutes);
+
+
 
 // Health check
 app.get('/health', (req, res) => res.send('OK'));
