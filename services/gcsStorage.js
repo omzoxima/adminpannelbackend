@@ -78,13 +78,13 @@ export async function getSignedUrl(filePath, expiryMinutes = 10) {
   let responseType;
   let cacheControl;
 
-  // Detect file type
+  // Correct MIME types for iOS
   if (filePath.endsWith('.m3u8')) {
-    responseType = 'application/x-mpegURL';
-    cacheControl = 'public,max-age=60'; // let clients cache for 1 min
+    responseType = 'application/vnd.apple.mpegurl';
+    cacheControl = 'public,max-age=300'; // playlist refresh every 5 min
   } else if (filePath.endsWith('.ts')) {
-    responseType = 'video/MP2T';
-    cacheControl = 'public,max-age=31536000'; // segments can be cached longer
+    responseType = 'video/mp2t';
+    cacheControl = 'public,max-age=31536000'; // 1 year cache for segments
   } else {
     cacheControl = 'public,max-age=86400';
   }
