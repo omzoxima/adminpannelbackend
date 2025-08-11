@@ -5,7 +5,13 @@ import fs from 'fs/promises'; // Missing import
  
 const storage = new Storage();
 const bucketName = 'run-sources-tuktuki-464514-asia-south1';
- 
+export async function uploadTextToGCS(filePath, contents, contentType, cacheControl) {
+  const file = storage.bucket(bucketName).file(filePath);
+  await file.save(contents, {
+    contentType,
+    metadata: { cacheControl },
+  });
+}
 // Upload single file to GCS
 export async function uploadToGCS(file, folder, makePublic = false) {
   const fileName = `${folder}/${uuidv4()}${path.extname(file.originalname)}`;
@@ -72,19 +78,18 @@ export async function uploadHLSFolderToGCS(localDir, gcsPath, makePublic = false
 }
  
 // Generate v4 signed URL
-export async function getSignedUrl(filePath, expiryMinutes = 10) {
+export async function getSignedUrl(filePath, expiryMinutes = 60) {
   const file = storage.bucket(bucketName).file(filePath);
 
   let responseType;
   let cacheControl;
 
-  // Correct MIME types for iOS
   if (filePath.endsWith('.m3u8')) {
     responseType = 'application/vnd.apple.mpegurl';
-    cacheControl = 'public,max-age=300'; // playlist refresh every 5 min
+    cacheControl = 'public,max-age=300'; // playlists refresh
   } else if (filePath.endsWith('.ts')) {
     responseType = 'video/mp2t';
-    cacheControl = 'public,max-age=31536000'; // 1 year cache for segments
+    cacheControl = 'public,max-age=31536000'; // segments long cache
   } else {
     cacheControl = 'public,max-age=86400';
   }
@@ -148,11 +153,16 @@ export async function downloadFromGCS(gcsPath) {
   const [contents] = await storage.bucket(bucketName).file(gcsPath).download();
   return contents.toString();
 }
+// Helper: download file text from GCS
+export async function downloadTextFromGCS(filePath) {
+  const [contents] = await storage.bucket(bucketName).file(filePath).download();
+  return contents.toString('utf8');
+}
  
 // Upload a file to GCS (overwrite)
-export async function uploadTextToGCS(gcsPath, text, contentType = 'application/x-mpegURL') {
+/*export async function uploadTextToGCS(gcsPath, text, contentType = 'application/x-mpegURL') {
   await storage.bucket(bucketName).file(gcsPath).save(text, {
     metadata: { contentType, cacheControl: 'public, max-age=31536000' },
     resumable: false
   });
-}
+}*/
