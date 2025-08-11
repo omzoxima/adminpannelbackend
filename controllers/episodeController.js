@@ -3,7 +3,8 @@ import { listSegmentFiles, getSignedUrl, downloadFromGCS, uploadTextToGCS, uploa
 import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
 import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
-
+// --- MODIFIED FUNCTION ---
+import fetch from 'node-fetch';
 import { Op } from 'sequelize';
 
 const location = 'asia-south1'; // Set your region
@@ -49,7 +50,17 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 };
 
 
-// --- MODIFIED FUNCTION ---
+
+
+async function verifyUrlAccessible(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD' });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
   const { series_id, episode_number, title, episode_description, videos } = req.body;
@@ -62,6 +73,8 @@ export const transcodeMp4ToHls = async (req, res) => {
   }
 
   let episode;
+  const gcsFoldersToCleanup = [];
+
   try {
     const series = await Series.findByPk(series_id);
     if (!series) return res.status(400).json({ error: 'Series not found' });
@@ -83,19 +96,35 @@ export const transcodeMp4ToHls = async (req, res) => {
 
       const outputFolder = `hls_output/${uuidv4()}/`;
       const outputUri = `gs://${outputBucketName}/${outputFolder}`;
+      gcsFoldersToCleanup.push(outputUri);
+
       const projectId = await transcoderClient.getProjectId();
 
       const jobConfig = {
         elementaryStreams: [
-          { key: 'video-sd', videoStream: { h264: { heightPixels: 360, bitrateBps: 800000, frameRate: 30, allowOpenGop: true, gopFrameCount: 30 } } },
-          { key: 'video-hd', videoStream: { h264: { heightPixels: 720, bitrateBps: 2500000, frameRate: 30, allowOpenGop: true, gopFrameCount: 30 } } },
-          { key: 'audio-stereo', audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 } },
+          {
+            key: 'video-hd',
+            videoStream: {
+              h264: {
+                heightPixels: 720,
+                bitrateBps: 2500000,
+                frameRate: 30,
+                allowOpenGop: false,
+                gopFrameCount: 30
+              }
+            }
+          },
+          {
+            key: 'audio-stereo',
+            audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 }
+          }
         ],
         muxStreams: [
-          { key: 'sd', container: 'ts', elementaryStreams: ['video-sd', 'audio-stereo'] },
-          { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] },
+          { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] }
         ],
-        manifests: [{ fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['hd'] }],
+        manifests: [
+          { fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['hd'] }
+        ],
       };
 
       const request = {
@@ -128,48 +157,57 @@ export const transcodeMp4ToHls = async (req, res) => {
       const gcsFolder = `gs://${outputBucketName}/${outputFolder}`;
       const segmentFiles = await listSegmentFilesForTranscode(gcsFolder);
 
-      const hdSegmentFiles = segmentFiles.filter(f => f.includes('/hd') && f.endsWith('.ts'));
+      const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
 
-      // Generate signed URLs for TS segments with correct headers
-      const segmentSignedUrls = {};
-      await Promise.all(hdSegmentFiles.map(async (segPath) => {
-        const relativePath = segPath.replace(`gs://${outputBucketName}/`, '');
-        segmentSignedUrls[relativePath] = await getSignedUrl(relativePath, 60 * 24 * 7, {
-          responseType: 'video/MP2T',
-          cacheControl: 'public,max-age=31536000'
-        });
-      }));
-
-      // Download original playlist
       let playlistText = await downloadFromGCS(playlistPath);
 
-      // Replace TS segment references with signed URLs
+      const tsFilesInPlaylist = playlistText
+        .split('\n')
+        .filter(line => line.trim().endsWith('.ts'))
+        .map(line => line.trim());
+
+      const segmentSignedUrls = {};
+      await Promise.all(tsFilesInPlaylist.map(async (tsFile) => {
+        const relativePath = `${outputFolder}${tsFile}`;
+        segmentSignedUrls[tsFile] = await getSignedUrl(relativePath, 60 * 6);
+      }));
+
       const newPlaylist = playlistText.split('\n').map(line => {
-        if (line.endsWith('.ts')) {
-          const filename = line.trim();
-          return segmentSignedUrls[`${outputFolder}${filename}`] || '';
+        const trimmed = line.trim();
+        if (trimmed.endsWith('.ts')) {
+          return segmentSignedUrls[trimmed] || trimmed;
         }
         return line;
-      }).filter(Boolean).join('\n');
+      }).join('\n');
 
-      // Upload updated playlist with correct MIME type & short cache
       await uploadTextToGCS(playlistPath, newPlaylist, {
-        contentType: 'application/x-mpegURL',
+        contentType: 'application/vnd.apple.mpegurl',
         cacheControl: 'public,max-age=300'
       });
 
-      const signedPlaylistUrl = await getSignedUrl(playlistPath, 60 * 24 * 7, {
-        responseType: 'application/x-mpegURL',
-        cacheControl: 'public,max-age=300'
-      });
+      const signedPlaylistUrl = await getSignedUrl(playlistPath, 60 * 6);
 
-      // First TS segment signed URL for testing
+      // ===== Preflight Verification =====
+      console.log(`[verify] Checking playlist: ${signedPlaylistUrl}`);
+      if (!(await verifyUrlAccessible(signedPlaylistUrl))) {
+        throw new Error(`Playlist not accessible: ${signedPlaylistUrl}`);
+      }
+
+      const playlistFetched = await (await fetch(signedPlaylistUrl)).text();
+      const tsUrls = playlistFetched
+        .split('\n')
+        .filter(line => line.trim().startsWith('http') && line.includes('.ts'));
+
+      console.log(`[verify] Found ${tsUrls.length} TS segments to check.`);
+      for (const tsUrl of tsUrls) {
+        if (!(await verifyUrlAccessible(tsUrl))) {
+          throw new Error(`TS segment not accessible: ${tsUrl}`);
+        }
+      }
+      console.log('[verify] All playlist + segments OK.');
+
       const firstSegmentPath = hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
-      const hdTsSignedUrl = await getSignedUrl(firstSegmentPath, 60 * 24 * 7, {
-        responseType: 'video/MP2T',
-        cacheControl: 'public,max-age=31536000'
-      });
 
       subtitles.push({
         gcsPath: playlistPath,
@@ -183,7 +221,7 @@ export const transcodeMp4ToHls = async (req, res) => {
     await episode.save();
 
     res.json({
-      message: 'HLS Transcoding successful',
+      message: 'HLS Transcoding successful (HD only, preflight verified)',
       episodeId: episode.id,
       subtitles,
     });
@@ -191,9 +229,22 @@ export const transcodeMp4ToHls = async (req, res) => {
   } catch (error) {
     console.error('[transcodeMp4ToHls] Error:', error);
     if (episode) await episode.destroy();
+
+    // Cleanup any uploaded GCS folders
+    for (const folderUri of gcsFoldersToCleanup) {
+      try {
+        const folderPath = folderUri.replace(`gs://${outputBucketName}/`, '');
+        await storage.bucket(outputBucketName).deleteFiles({ prefix: folderPath });
+        console.log(`[cleanup] Deleted GCS folder: ${folderUri}`);
+      } catch (e) {
+        console.warn(`[cleanup] Failed to delete GCS folder ${folderUri}:`, e.message);
+      }
+    }
+
     res.status(500).json({ error: error.message || 'Transcoding failed' });
   }
 };
+
 
 
 
