@@ -77,30 +77,53 @@ export const transcodeMp4ToHls = async (req, res) => {
   let episode;
   const gcsFoldersToCleanup = [];
 
-  // Function to generate CDN signed URL
-  const generateCdnSignedUrl = (path, expiresAt = null) => {
-    const p = `/${path}`;
-    const expiryTime = expiresAt || Math.floor(Date.now() / 1000) + CDN_CONFIG.defaultTtl;
-    const urlToSign = `${p}?Expires=${expiryTime}&KeyName=${CDN_CONFIG.keyName}`;
-    
-    // Decode the base64 key
-    const key = Buffer.from(CDN_CONFIG.base64Key, 'base64');
-    
-    // Create HMAC signature
-    const hmac = crypto.createHmac('sha1', key);
-    hmac.update(urlToSign);
-    const signature = hmac.digest('base64');
-    
-    // URL encode the signature
-    const urlSafeSignature = signature
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/g, '');
-    
-    // Construct final URL
-    return `https://${CDN_CONFIG.domain}${urlToSign}&Signature=${urlSafeSignature}`;
-  };
-
+ function generateCdnSignedUrl(thumbnailPath) {
+    const CDN_HOST = process.env.CDN_DOMAIN || 'cdn.tuktuki.com';
+    const KEY_NAME = process.env.CDN_KEY_NAME || 'key1';
+    const KEY_B64URL = process.env.CDN_KEY_SECRET;
+    const TTL_SECS = 60 * 24; // 1 day (24 hours)
+    const p = `/${thumbnailPath}`;
+  
+    if (!KEY_B64URL) {
+      return p; // Return original path if CDN not configured
+    }
+  
+    // Base64url helpers
+    function b64urlDecode(b64url) {
+      let b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4 !== 0) b64 += '=';
+      return Buffer.from(b64, 'base64');
+    }
+  
+    function b64urlEncode(buf) {
+      return Buffer.from(buf)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+    }
+  
+    const KEY_BYTES = b64urlDecode(KEY_B64URL);
+  
+    // Sign a FULL URL
+    function signFullUrl(fullUrl, keyName, keyBytes, expiresEpoch) {
+      const sep = fullUrl.includes('?') ? '&' : '?';
+      const urlToSign = `${fullUrl}${sep}Expires=${expiresEpoch}&KeyName=${encodeURIComponent(keyName)}`;
+  
+      const hmac = crypto.createHmac('sha1', keyBytes);
+      hmac.update(urlToSign, 'utf8');
+      const sig = b64urlEncode(hmac.digest());
+  
+      return `${urlToSign}&Signature=${sig}`;
+    }
+  
+    // Build the upstream URL and sign it
+    const upstream = new URL(`https://${CDN_HOST}${p}`);
+    const expires = Math.floor(Date.now() / 1000) + TTL_SECS;
+    return signFullUrl(upstream.toString(), KEY_NAME, KEY_BYTES, expires);
+  }
+  
+ 
   try {
     const series = await Series.findByPk(series_id);
     if (!series) return res.status(400).json({ error: 'Series not found' });
