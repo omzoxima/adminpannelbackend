@@ -3,7 +3,7 @@ import { listSegmentFiles, uploadHLSFolderToGCS, getUploadSignedUrl, listSegment
 import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
 import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
-
+import crypto from 'crypto';
 import { Op } from 'sequelize';
 
 const location = process.env.GOOGLE_CLOUD_REGION || 'asia-south1';
@@ -51,10 +51,206 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 
 
 
-
-
-
 export const transcodeMp4ToHls = async (req, res) => {
+  console.log('[transcodeMp4ToHls] Received request.');
+  const { series_id, episode_number, title, episode_description, videos } = req.body;
+
+  if (!Array.isArray(videos) || videos.length === 0) {
+    return res.status(400).json({ error: 'Videos array is required' });
+  }
+  if (!series_id || !episode_number) {
+    return res.status(400).json({ error: 'series_id and episode_number are required' });
+  }
+
+  // CDN Configuration
+  const CDN_CONFIG = {
+    domain: process.env.CDN_DOMAIN || 'cdn.tuktuki.com',
+    keyName: process.env.CDN_KEY_NAME || 'key1',
+    base64Key: process.env.CDN_KEY_SECRET,
+    defaultTtl: parseInt(process.env.TTL_SECS || '3600', 10)
+  };
+
+  if (!CDN_CONFIG.base64Key) {
+    return res.status(500).json({ error: 'CDN_KEY_SECRET environment variable not set' });
+  }
+
+  let episode;
+  const gcsFoldersToCleanup = [];
+
+  // Function to generate CDN signed URL
+  const generateCdnSignedUrl = (path, expiresAt = null) => {
+    const expiryTime = expiresAt || Math.floor(Date.now() / 1000) + CDN_CONFIG.defaultTtl;
+    const urlToSign = `${path}?Expires=${expiryTime}&KeyName=${CDN_CONFIG.keyName}`;
+    
+    // Decode the base64 key
+    const key = Buffer.from(CDN_CONFIG.base64Key, 'base64');
+    
+    // Create HMAC signature
+    const hmac = crypto.createHmac('sha1', key);
+    hmac.update(urlToSign);
+    const signature = hmac.digest('base64');
+    
+    // URL encode the signature
+    const urlSafeSignature = signature
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    
+    // Construct final URL
+    return `https://${CDN_CONFIG.domain}${urlToSign}&Signature=${urlSafeSignature}`;
+  };
+
+  try {
+    const series = await Series.findByPk(series_id);
+    if (!series) return res.status(400).json({ error: 'Series not found' });
+
+    episode = await Episode.create({
+      title: title || `Episode ${episode_number}`,
+      episode_number,
+      series_id,
+      description: episode_description || null,
+      reward_cost_points: 0,
+      subtitles: [],
+    });
+
+    const subtitles = [];
+
+    for (const video of videos) {
+      const { gcsFilePath, language } = video;
+      if (!isValidGcsUri(gcsFilePath)) throw new Error(`Invalid GCS path for ${language}`);
+
+      const outputFolder = `hls_output/${uuidv4()}/`;
+      const outputUri = `gs://${outputBucketName}/${outputFolder}`;
+      gcsFoldersToCleanup.push(outputUri);
+
+      const projectId = await transcoderClient.getProjectId();
+
+      const jobConfig = {
+        elementaryStreams: [
+          {
+            key: 'video-hd',
+            videoStream: {
+              h264: {
+                heightPixels: 720,
+                bitrateBps: 2500000,
+                frameRate: 30,
+                allowOpenGop: false,
+                gopFrameCount: 30
+              }
+            }
+          },
+          {
+            key: 'audio-stereo',
+            audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 }
+          }
+        ],
+        muxStreams: [
+          { 
+            key: 'hd', 
+            container: 'ts', 
+            elementaryStreams: ['video-hd', 'audio-stereo'],
+            segmentSettings: {
+              segmentDuration: {
+                seconds: '6' // Shorter segments for better CDN caching
+              }
+            }
+          }
+        ],
+        manifests: [
+          { 
+            fileName: 'playlist.m3u8', 
+            type: 'HLS', 
+            muxStreams: ['hd'],
+            uriPrefix: `https://${CDN_CONFIG.domain}/` // Ensure absolute URLs in playlist
+          }
+        ],
+      };
+
+      const request = {
+        parent: `projects/${projectId}/locations/${location}`,
+        job: { inputUri: gcsFilePath, outputUri, config: jobConfig },
+      };
+
+      const [operation] = await transcoderClient.createJob(request);
+      const jobName = operation.name;
+
+      const timeout = 10 * 60 * 1000;
+      const start = Date.now();
+      let jobResult;
+      let jobState = 'PENDING';
+
+      while (Date.now() - start < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        [jobResult] = await transcoderClient.getJob({ name: jobName });
+        jobState = jobResult.state;
+        if (['SUCCEEDED', 'FAILED'].includes(jobState)) break;
+      }
+
+      if (jobState !== 'SUCCEEDED') {
+        throw new Error(jobState === 'FAILED'
+          ? `Transcoding failed: ${jobResult.error?.message}`
+          : 'Transcoding timeout');
+      }
+
+      const playlistPath = `${outputFolder}playlist.m3u8`;
+      const gcsFolder = `gs://${outputBucketName}/${outputFolder}`;
+      const segmentFiles = await listSegmentFilesForTranscode(gcsFolder);
+
+      const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
+      if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
+
+      // Generate signed URLs with different TTLs
+      const playlistSignedUrl = generateCdnSignedUrl(playlistPath, Math.floor(Date.now() / 1000) + 86400); // 24 hours
+      const firstSegmentSignedUrl = generateCdnSignedUrl(
+        hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, ''),
+        Math.floor(Date.now() / 1000) + 3600 // 1 hour
+      );
+
+      subtitles.push({
+        gcsPath: playlistPath,
+        signedPlaylistUrl: playlistSignedUrl,
+        language,
+        hdTsPath: hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, ''),
+        signedSegmentUrl: firstSegmentSignedUrl,
+        segmentUrlPattern: generateCdnSignedUrl(outputFolder, Math.floor(Date.now() / 1000) + 3600)
+          .replace(outputFolder, `${outputFolder}*.ts`)
+      });
+    }
+
+    episode.subtitles = subtitles;
+    await episode.save();
+
+    res.json({
+      message: 'HLS Transcoding successful with CDN URLs',
+      episodeId: episode.id,
+      subtitles: subtitles.map(sub => ({
+        language: sub.language,
+        playlistUrl: sub.signedPlaylistUrl,
+        segmentUrlPattern: sub.segmentUrlPattern,
+        exampleSegmentUrl: sub.signedSegmentUrl
+      })),
+      cdnConfig: {
+        domain: CDN_CONFIG.domain,
+        keyName: CDN_CONFIG.keyName,
+        ttl: CDN_CONFIG.defaultTtl
+      }
+    });
+
+  } catch (error) {
+    console.error('[transcodeMp4ToHls] Error:', error);
+    if (episode) await episode.destroy();
+
+   
+
+    res.status(500).json({ 
+      error: error.message || 'Transcoding failed',
+      ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+    });
+  }
+};
+
+
+/*export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
   const { series_id, episode_number, title, episode_description, videos } = req.body;
 
@@ -195,7 +391,7 @@ export const transcodeMp4ToHls = async (req, res) => {
 
     res.status(500).json({ error: error.message || 'Transcoding failed' });
   }
-};
+};*/
 
 
 
