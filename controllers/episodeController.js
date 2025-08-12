@@ -79,8 +79,9 @@ export const transcodeMp4ToHls = async (req, res) => {
 
   // Function to generate CDN signed URL
   const generateCdnSignedUrl = (path, expiresAt = null) => {
+    const p = `/${path}`;
     const expiryTime = expiresAt || Math.floor(Date.now() / 1000) + CDN_CONFIG.defaultTtl;
-    const urlToSign = `${path}?Expires=${expiryTime}&KeyName=${CDN_CONFIG.keyName}`;
+    const urlToSign = `${p}?Expires=${expiryTime}&KeyName=${CDN_CONFIG.keyName}`;
     
     // Decode the base64 key
     const key = Buffer.from(CDN_CONFIG.base64Key, 'base64');
