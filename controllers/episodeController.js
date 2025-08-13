@@ -5,6 +5,7 @@ import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { Op } from 'sequelize';
+import path from "path";
 const storage = new Storage();
 const location = process.env.GOOGLE_CLOUD_REGION || 'asia-south1';
 const outputBucketName = process.env.GCS_OUTPUT_BUCKET_NAME || 'run-sources-tuktuki-464514-asia-south1';
