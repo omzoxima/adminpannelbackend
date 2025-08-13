@@ -51,15 +51,6 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
   }
 };
 
-import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
-import { Storage } from '@google-cloud/storage';
-import path from 'path';
-
-
-
-
-
-
 // POST /transcode
 export const transcodeMp4ToHls = async (req, res) => {
   try {
