@@ -5,13 +5,15 @@ import { Storage } from '@google-cloud/storage';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { Op } from 'sequelize';
-
+const storage = new Storage();
 const location = process.env.GOOGLE_CLOUD_REGION || 'asia-south1';
 const outputBucketName = process.env.GCS_OUTPUT_BUCKET_NAME || 'run-sources-tuktuki-464514-asia-south1';
 const bucketName = process.env.GCS_BUCKET_NAME || 'run-sources-tuktuki-464514-asia-south1';
 const transcoderClient = new TranscoderServiceClient();
 const storageClient = new Storage();
+const projectId = 'tuktuki-464514';
 
+const inputBucket = 'run-sources-tuktuki-464514-asia-south1';
 function isValidGcsUri(uri) {
   return typeof uri === 'string' && uri.startsWith('gs://') && uri.length > 5;
 }
@@ -49,12 +51,125 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
   }
 };
 
+import { TranscoderServiceClient } from '@google-cloud/video-transcoder';
+import { Storage } from '@google-cloud/storage';
+import path from 'path';
 
 
 
 
 
+
+// POST /transcode
 export const transcodeMp4ToHls = async (req, res) => {
+  try {
+    console.log('[transcodeMp4ToHls] Received request.');
+
+    const { fileName, fullPath } = req.body;
+
+    if (!fileName || !fullPath) {
+      return res.status(400).json({ error: 'fileName and fullPath are required' });
+    }
+
+    const fileExt = path.extname(fileName).toLowerCase().replace('.', '');
+    if (fileExt !== 'mp4' && fileName !== 'newfile.txt') {
+      return res.status(400).json({ error: 'Invalid file type. Only mp4 or newfile.txt allowed.' });
+    }
+
+    const folderName = path.basename(fileName, path.extname(fileName));
+    const tempFinalOut = fullPath.substring(0, fullPath.lastIndexOf('/'));
+    const outputUri = `gs://${inputBucket}/${tempFinalOut}/output/`;
+    let inputPath = `gs://${inputBucket}/${fullPath}`;
+    let isMuted = fileName.includes('-muted');
+
+    // If fileName is newfile.txt, scan folder for mp4
+    if (fileName === 'newfile.txt') {
+      const [files] = await storage.bucket(inputBucket).getFiles({ prefix: `${tempFinalOut}/` });
+      const mp4File = files.find(f => f.name.toLowerCase().endsWith('.mp4'));
+      if (!mp4File) {
+        return res.status(400).json({ error: 'No mp4 file found in folder.' });
+      }
+      inputPath = `gs://${inputBucket}/${mp4File.name}`;
+    }
+
+    // Prepare transcoding job config
+    const baseElementaryStreams = [
+      {
+        key: 'video-stream0',
+        videoStream: {
+          h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 550000, frameRate: 60 }
+        }
+      },
+      {
+        key: 'video-stream1',
+        videoStream: {
+          h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 60 }
+        }
+      }
+    ];
+
+    if (!isMuted) {
+      baseElementaryStreams.push({
+        key: 'audio-stream0',
+        audioStream: { codec: 'aac', bitrateBps: 64000 }
+      });
+    }
+
+    const muxStreams = [
+      {
+        key: `${folderName}-sd`,
+        container: 'ts',
+        elementaryStreams: isMuted ? ['video-stream0'] : ['video-stream0', 'audio-stream0']
+      },
+      {
+        key: `${folderName}-hd`,
+        container: 'ts',
+        elementaryStreams: isMuted ? ['video-stream1'] : ['video-stream1', 'audio-stream0']
+      }
+    ];
+
+    const manifests = [
+      {
+        fileName: 'manifest.m3u8',
+        type: 'HLS',
+        muxStreams: [`${folderName}-hd`, `${folderName}-sd`]
+      }
+    ];
+
+    const request = {
+      parent: transcoderClient.locationPath(projectId, location),
+      job: {
+        inputUri: inputPath,
+        outputUri,
+        config: {
+          elementaryStreams: baseElementaryStreams,
+          muxStreams,
+          manifests
+        }
+      }
+    };
+
+    console.log('[transcodeMp4ToHls] Starting job:', request);
+    const [response] = await transcoderClient.createJob(request);
+
+    return res.json({
+      message: 'Transcoding job started successfully',
+      jobName: response.name,
+      outputFolder: outputUri
+    });
+
+  } catch (error) {
+    console.error('[transcodeMp4ToHls] Error:', error);
+    return res.status(500).json({ error: error.message || 'Transcoding failed' });
+  }
+};
+
+
+
+
+
+
+/*export const transcodeMp4ToHls = async (req, res) => {
   console.log('[transcodeMp4ToHls] Received request.');
   const { series_id, episode_number, title, episode_description, videos } = req.body;
 
@@ -110,15 +225,28 @@ export const transcodeMp4ToHls = async (req, res) => {
             }
           },
           {
+            key: 'video-sd',
+            videoStream: {
+              h264: {
+                heightPixels: 480,
+                bitrateBps: 1000000,
+                frameRate: 30,
+                allowOpenGop: false,
+                gopFrameCount: 30
+              }
+            }
+          },
+          {
             key: 'audio-stereo',
             audioStream: { codec: 'aac', bitrateBps: 128000, channelCount: 2 }
           }
         ],
         muxStreams: [
-          { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] }
+          { key: 'hd', container: 'ts', elementaryStreams: ['video-hd', 'audio-stereo'] },
+          { key: 'sd', container: 'ts', elementaryStreams: ['video-sd', 'audio-stereo'] }
         ],
         manifests: [
-          { fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['hd'] }
+          { fileName: 'playlist.m3u8', type: 'HLS', muxStreams: ['hd', 'sd'] }
         ],
       };
 
@@ -154,16 +282,21 @@ export const transcodeMp4ToHls = async (req, res) => {
       const gcsFolder = `gs://${outputBucketName}/${outputFolder}`;
       const segmentFiles = await listSegmentFilesForTranscode(gcsFolder);
 
-      const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts'));
+      const hdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts') && f.includes('hd'));
+      const sdSegmentFiles = segmentFiles.filter(f => f.endsWith('.ts') && f.includes('sd'));
+      
       if (!hdSegmentFiles.length) throw new Error(`No HD segments found in ${gcsFolder}`);
+      if (!sdSegmentFiles.length) throw new Error(`No SD segments found in ${gcsFolder}`);
 
       // Store raw GCS paths for future CDN use
-      const firstSegmentPath = hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
+      const firstHdSegmentPath = hdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
+      const firstSdSegmentPath = sdSegmentFiles[0].replace(`gs://${outputBucketName}/`, '');
 
       subtitles.push({
         gcsPath: playlistPath,
         language,
-        hdTsPath: firstSegmentPath
+        hdTsPath: firstHdSegmentPath,
+        sdTsPath: firstSdSegmentPath
       });
     }
 
@@ -195,7 +328,7 @@ export const transcodeMp4ToHls = async (req, res) => {
 
     res.status(500).json({ error: error.message || 'Transcoding failed' });
   }
-};
+};*/
 
 
 
