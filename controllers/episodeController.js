@@ -70,7 +70,7 @@ export const transcodeMp4ToHls = async (req, res) => {
 
     const folderName = path.basename(fileName, path.extname(fileName));
     const tempFinalOut = fullPath.substring(0, fullPath.lastIndexOf('/'));
-    const outputUri = `gs://${inputBucket}/${tempFinalOut}/output/`;
+    const outputUri = `gs://${inputBucket}/temp_output/${uuidv4()}/`;
     let inputPath = `gs://${inputBucket}/${fullPath}`;
     let isMuted = fileName.includes('-muted');
 
