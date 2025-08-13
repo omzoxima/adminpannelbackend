@@ -53,7 +53,7 @@ export const generateLanguageVideoUploadUrls = async (req, res) => {
 };
 
 // POST /transcode
-export const transcodeMp4ToHls = async (req, res) => {
+/*export const transcodeMp4ToHls = async (req, res) => {
   try {
     console.log('[transcodeMp4ToHls] Received request.');
 
@@ -154,9 +154,168 @@ export const transcodeMp4ToHls = async (req, res) => {
     console.error('[transcodeMp4ToHls] Error:', error);
     return res.status(500).json({ error: error.message || 'Transcoding failed' });
   }
+};*/
+
+
+export const transcodeMp4ToHls = async (req, res) => {
+  console.log('[transcodeMp4ToHls] Received request.');
+
+  const { series_id, episode_number, title, episode_description, videos } = req.body;
+
+  if (!Array.isArray(videos) || videos.length === 0 || videos.length > 2) {
+    return res.status(400).json({ error: 'Videos array (max 2) is required' });
+  }
+  if (!series_id || !episode_number) {
+    return res.status(400).json({ error: 'series_id and episode_number are required' });
+  }
+
+  let episode;
+  const gcsFoldersToCleanup = [];
+
+  try {
+    // 1. Validate series
+    const series = await Series.findByPk(series_id);
+    if (!series) return res.status(400).json({ error: 'Series not found' });
+
+    // 2. Create episode in DB
+    episode = await Episode.create({
+      title: title || `Episode ${episode_number}`,
+      episode_number,
+      series_id,
+      description: episode_description || null,
+      reward_cost_points: 0,
+      subtitles: [],
+    });
+
+    const subtitles = [];
+
+    for (const video of videos) {
+      const { fileName, fullPath, language } = video;
+
+      if (!fileName || !fullPath) {
+        throw new Error(`Missing fileName or fullPath for language ${language || 'unknown'}`);
+      }
+
+      const fileExt = path.extname(fileName).toLowerCase().replace('.', '');
+      if (fileExt !== 'mp4' && fileName !== 'newfile.txt') {
+        throw new Error(`Invalid file type for ${fileName}. Only mp4 or newfile.txt allowed.`);
+      }
+
+      const folderName = path.basename(fileName, path.extname(fileName));
+      const tempFinalOut = fullPath.substring(0, fullPath.lastIndexOf('/'));
+      let inputPath = `gs://${inputBucket}/${fullPath}`;
+      let isMuted = fileName.includes('-muted');
+
+      // Handle newfile.txt → find mp4 in same folder
+      if (fileName === 'newfile.txt') {
+        const [files] = await storage.bucket(inputBucket).getFiles({ prefix: `${tempFinalOut}/` });
+        const mp4File = files.find(f => f.name.toLowerCase().endsWith('.mp4'));
+        if (!mp4File) {
+          throw new Error(`No mp4 file found in folder for ${language || 'unknown'}`);
+        }
+        inputPath = `gs://${inputBucket}/${mp4File.name}`;
+      }
+
+      // Output folder based on language
+      const outputFolder = `tuktuki_output/${language}/${uuidv4()}/`;
+      const outputUri = `gs://${outputBucketName}/${outputFolder}`;
+      gcsFoldersToCleanup.push(outputUri);
+
+      // Prepare transcoding job config (same as your current logic)
+      const baseElementaryStreams = [
+        {
+          key: 'video-stream0',
+          videoStream: {
+            h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 550000, frameRate: 60 }
+          }
+        },
+        {
+          key: 'video-stream1',
+          videoStream: {
+            h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 60 }
+          }
+        }
+      ];
+
+      if (!isMuted) {
+        baseElementaryStreams.push({
+          key: 'audio-stream0',
+          audioStream: { codec: 'aac', bitrateBps: 64000 }
+        });
+      }
+
+      const muxStreams = [
+        {
+          key: `${folderName}-sd`,
+          container: 'ts',
+          elementaryStreams: isMuted ? ['video-stream0'] : ['video-stream0', 'audio-stream0']
+        },
+        {
+          key: `${folderName}-hd`,
+          container: 'ts',
+          elementaryStreams: isMuted ? ['video-stream1'] : ['video-stream1', 'audio-stream0']
+        }
+      ];
+
+      const manifests = [
+        {
+          fileName: 'manifest.m3u8',
+          type: 'HLS',
+          muxStreams: [`${folderName}-hd`, `${folderName}-sd`]
+        }
+      ];
+
+      const request = {
+        parent: transcoderClient.locationPath(projectId, location),
+        job: {
+          inputUri: inputPath,
+          outputUri,
+          config: {
+            elementaryStreams: baseElementaryStreams,
+            muxStreams,
+            manifests
+          }
+        }
+      };
+
+      console.log(`[transcodeMp4ToHls] Starting job for ${language || 'unknown'}:`, request);
+      const [response] = await transcoderClient.createJob(request);
+
+      subtitles.push({
+        gcsPath: `https://cdn.tuktuki.com/${outputFolder}manifest.m3u8`,
+        language,
+        hdTsPath: `https://cdn.tuktuki.com/${outputFolder}`,
+      });
+    }
+
+    // Save subtitles array to episode
+    episode.subtitles = subtitles;
+    await episode.save();
+
+    res.json({
+      message: 'HLS Transcoding jobs started successfully',
+      episodeId: episode.id,
+      subtitles
+    });
+
+  } catch (error) {
+    console.error('[transcodeMp4ToHls] Error:', error);
+    if (episode) await episode.destroy();
+
+    // Cleanup any uploaded GCS folders
+    for (const folderUri of gcsFoldersToCleanup) {
+      try {
+        const folderPath = folderUri.replace(`gs://${outputBucketName}/`, '');
+        await storage.bucket(outputBucketName).deleteFiles({ prefix: folderPath });
+        console.log(`[cleanup] Deleted GCS folder: ${folderUri}`);
+      } catch (e) {
+        console.warn(`[cleanup] Failed to delete GCS folder ${folderUri}:`, e.message);
+      }
+    }
+
+    res.status(500).json({ error: error.message || 'Transcoding failed' });
+  }
 };
-
-
 
 
 
