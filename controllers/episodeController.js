@@ -226,13 +226,13 @@ export const transcodeMp4ToHls = async (req, res) => {
         {
           key: 'video-stream0',
           videoStream: {
-            h264: { heightPixels: 360, widthPixels: 640, bitrateBps: 550000, frameRate: 60 }
+            h264: { heightPixels: 480, bitrateBps: 550000, frameRate: 60,rotation: 'AUTO' }
           }
         },
         {
           key: 'video-stream1',
           videoStream: {
-            h264: { heightPixels: 720, widthPixels: 1280, bitrateBps: 2500000, frameRate: 60 }
+            h264: { heightPixels: 720, bitrateBps: 2500000, frameRate: 60,rotation: 'AUTO' }
           }
         }
       ];
