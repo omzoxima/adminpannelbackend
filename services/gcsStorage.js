@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs/promises'; // Missing import
  
 const storage = new Storage();
-const bucketName = 'run-sources-tuktuki-464514-asia-south1';
+const bucketName = 'run-sources-tuktuki-dev-asia-south1';
 export async function uploadTextToGCS(filePath, contents, contentType, cacheControl) {
   const file = storage.bucket(bucketName).file(filePath);
   await file.save(contents, {
